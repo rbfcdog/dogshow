@@ -12,6 +12,7 @@
 .~lock.*
 
 # Financial source packs and generated outputs
+/docs/
 /dados_tarvo/
 /saida/
 /Tarvo_Data_Pack_*.zip
