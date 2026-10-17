@@ -184,7 +184,7 @@ class ModelUnavailable(RuntimeError):
 
 
 class OpenAIInterpreter:
-    def __init__(self, env_file: Path, cache_dir: Path, *, log: FlowLog | None = None):
+    def __init__(self, env_file: Path, cache_dir: Path, *, log: FlowLog | None = None, reuse_cache: bool = True):
         load_dotenv(env_file, override=False)
         if not os.environ.get("OPENAI_API_KEY"):
             raise ModelUnavailable("OPENAI_API_KEY ausente; configure o .env.")
@@ -193,6 +193,7 @@ class OpenAIInterpreter:
             raise ModelUnavailable("OPENAI_MODEL ausente; configure o identificador do modelo no .env.")
         self.client = OpenAI(timeout=120, max_retries=2)
         self.cache_dir = cache_dir
+        self.reuse_cache = reuse_cache
         self.log = log
 
     def _event(self, stage: str, event: str, **details) -> None:
@@ -216,7 +217,7 @@ class OpenAIInterpreter:
         key = digest(json_text(request).encode("utf-8"))
         path = self.cache_dir / f"{key}.json"
         self._event(stage, "LLM_SOLICITACAO_INICIADA", request_hash=key)
-        if path.exists():
+        if self.reuse_cache and path.exists():
             import json
             try:
                 cached = json.loads(path.read_text(encoding="utf-8"))

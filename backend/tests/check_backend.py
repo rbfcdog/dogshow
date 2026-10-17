@@ -1,9 +1,11 @@
 from collections import Counter
 from dataclasses import replace
 from datetime import date
+import os
 from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from check_banking import check as check_banking
@@ -132,6 +134,16 @@ def check_http_boundaries() -> None:
             assert response.status_code == 422
             assert directory not in response.text
             assert "Fonte de dados não permitida" in response.json()["detail"]["message"]
+    with TemporaryDirectory() as directory, patch.dict(os.environ, {"OPENAI_API_KEY": "", "OPENAI_MODEL": ""}):
+        previous = Path.cwd()
+        try:
+            os.chdir(directory)
+            response = TestClient(create_app(ROOT / "dados_tarvo")).post(
+                "/api/v1/fechamento/executar", params={"competencia": "2026-09"})
+            assert response.status_code == 502 and "OPENAI_API_KEY ausente" in response.json()["detail"]
+            assert not (Path(directory) / "saida/comissoes_por_lojista.csv").exists()
+        finally:
+            os.chdir(previous)
     for outside in (ROOT / "docs", ROOT):
         response = TestClient(create_app(outside)).get("/api/v1/fechamento", params={"competencia": "2026-09"})
         assert response.status_code == 422 and "dados_tarvo" in response.json()["detail"]["message"]

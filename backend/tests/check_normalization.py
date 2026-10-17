@@ -367,6 +367,13 @@ def _check_interpreter() -> None:
             else:
                 raise AssertionError("Erro da API não foi convertido em indisponibilidade.")
             assert not failed.cache_dir.exists()
+            client.responses.parse.side_effect = None
+            response.output_parsed = proposal
+            fresh = OpenAIInterpreter(env_file, root / "cache", reuse_cache=False)
+            before = client.responses.parse.call_count
+            assert fresh.invoke(context, "NORMALIZACAO") == proposal
+            assert fresh.invoke(context, "NORMALIZACAO") == proposal
+            assert client.responses.parse.call_count == before + 2
 
         os.environ.pop("OPENAI_API_KEY")
         with patch("src.infrastructure.openai_normalizer.OpenAI") as factory:

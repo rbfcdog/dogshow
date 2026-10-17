@@ -1,24 +1,3 @@
-# Documents and presentations
-*.md
-*.doc
-*.docx
-*.odt
-*.pdf
-*.ppt
-*.pptx
-*.xls
-*.xlsx
-*.xlsm
-.~lock.*
-
-# Financial source packs and generated outputs
-/docs/
-/dados_tarvo/
-/saida/
-/Tarvo_Data_Pack_*.zip
-*.eml
-*.ofx
-
 # Python environments and generated artifacts
 .venv/
 __pycache__/
@@ -31,8 +10,26 @@ htmlcov/
 build/
 dist/
 *.egg-info/
+*.tmp
 
-# Local secrets
+# Office temporary lock files
+.~lock.*
+Tarvo_Data_Pack_*.zip
+/dados_tarvo/
+/docs/
+/saida/*
+!/saida/comissoes_por_lojista.csv
+!/saida/divergencias_taxa.csv
+!/saida/notas_a_emitir.csv
+!/saida/lancamentos_classificados.csv
+!/saida/pendencias.csv
+!/saida/rastro.csv
+
+# Frontend build artifacts
+frontend/node_modules/
+frontend/.next/
+
+# Local secrets (NEVER commit secrets or API keys)
 .env
 .env.*
 !.env.example

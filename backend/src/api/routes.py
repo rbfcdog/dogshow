@@ -8,7 +8,7 @@ from src.application.closing import close_month
 from src.application.diagnostics import DiagnosticReport, diagnose
 from src.domain.closing import ClosingResult
 from src.domain.models import Dataset
-from src.infrastructure.exports import CSV_FILES, render_csv
+from src.infrastructure.exports import CSV_FILES, export_csvs, render_csv
 from src.infrastructure.readers import load_dataset
 
 
@@ -49,6 +49,51 @@ def create_router(data_dir: Path | None) -> APIRouter:
         dataset: Annotated[Dataset, Depends(configured_dataset)],
     ) -> ClosingResult:
         return close_month(dataset, period)
+
+    @router.post("/fechamento/executar")
+    def executar_fechamento(
+        period: Annotated[date, Depends(parse_period)],
+        dataset: Annotated[Dataset, Depends(configured_dataset)],
+    ):
+        from src.infrastructure.openai_normalizer import ModelUnavailable, OpenAIInterpreter
+        from src.application.normalization import load_reference, normalize_reference
+        from src.infrastructure.flow_log import FlowLog
+        from src.infrastructure.slack_inbox import default_inbox, find_inbox_file, parse_inbox
+
+        assert data_dir is not None
+        saida_dir = Path("saida")
+        contract_dir = saida_dir / "referencias"
+        warnings = ["Classificação bancária apenas por regras; movimentos sem conta permanecem pendentes de revisão."]
+        inbox_file = find_inbox_file(data_dir)
+        policies = parse_inbox(inbox_file) if inbox_file else default_inbox()
+        try:
+            with FlowLog(contract_dir) as log:
+                interpreter = OpenAIInterpreter(Path(".env"), contract_dir / "cache_llm", log=log, reuse_cache=False)
+                report = normalize_reference(dataset, data_dir, contract_dir, interpreter, log=log, inbox=policies)
+        except ModelUnavailable as error:
+            raise HTTPException(502, str(error)) from error
+        dataset = load_reference(dataset, data_dir, contract_dir / "referencias.json", inbox=policies)
+        applied = [f"normalização com IA ({interpreter.model})", "contratual: referencias.json"]
+        result = close_month(dataset, period, policies=policies)
+        late_count = sum(entry.source.file.startswith("06_orbe") for entry in dataset.checkout)
+        export_csvs(result, saida_dir)
+        from src.infrastructure.summary import render_summary
+        summary_text = render_summary(result, tuple(applied), tuple(warnings), str(saida_dir), late_adjustments=late_count)
+        return {
+            "success": True,
+            "competencia": result.competencia,
+            "status": result.status,
+            "summary_text": summary_text,
+            "comissoes_total": sum(c.comissao_brl for c in result.comissoes_por_lojista),
+            "notas_total": sum(n.valor_brl for n in result.notas_a_emitir),
+            "divergencias_total": sum(d.diferenca_brl for d in result.divergencias_taxa),
+            "pendencias_count": len(result.pendencias),
+            "rastro_count": len(result.rastro),
+            "applied_references": applied,
+            "normalization": report["summary"],
+            "model": interpreter.model,
+            "warnings": warnings,
+        }
 
     @router.get("/fechamento/{arquivo}", response_class=Response)
     def arquivo_fechamento(

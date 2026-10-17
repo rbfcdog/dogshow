@@ -8,24 +8,27 @@ from src.application.closing import close_month
 from src.domain.models import DataPackError
 from src.infrastructure.exports import export_csvs
 from src.infrastructure.readers import load_dataset
+from src.infrastructure.openai_normalizer import ModelUnavailable, OpenAIInterpreter
 from src.infrastructure.summary import render_summary
 
 CONTRACT_REFERENCE = Path("referencias") / "referencias.json"
-BANK_REFERENCE = Path("referencias_bancarias") / "revisada-v0.json"
+
+
+def resolve_env_file(path: Path) -> Path:
+    if path.is_file() or path != Path(".env"):
+        return path
+    return Path(__file__).resolve().parents[2] / ".env"
 
 
 def main() -> None:
-    parser = ArgumentParser(description="Fechamento Tarvo: um comando lê os arquivos do mês, aplica as referências "
-        "revisadas, gera os seis CSVs e imprime o resumo.")
+    parser = ArgumentParser(description="Fechamento Tarvo: lê os arquivos do mês, normaliza contratos com IA, "
+        "gera os seis CSVs e imprime o resumo.")
     parser.add_argument("--entrada", required=True, type=Path)
     parser.add_argument("--competencia", required=True)
     parser.add_argument("--saida", required=True, type=Path)
-    parser.add_argument("--referencias", type=Path, help="Referência contratual; padrão: <saida>/referencias/referencias.json se existir.")
+    parser.add_argument("--referencias", type=Path, help="Destino da referência contratual gerada por IA; padrão: <saida>/referencias/referencias.json.")
     parser.add_argument("--referencias-bancarias", type=Path,
-        help="Referência bancária aprovada; padrão: <saida>/referencias_bancarias/revisada-v0.json se existir.")
-    parser.add_argument("--sem-referencias", action="store_true", help="Ignora referências e usa só os dados originais.")
-    parser.add_argument("--regerar", action="store_true",
-        help="Chama a LLM antes de fechar para gerar a referência contratual (exige OPENAI_API_KEY e OPENAI_MODEL no .env).")
+        help="Referência bancária aprovada opcional; sem ela, usa regras e mantém pendências bancárias.")
     parser.add_argument("--env-file", type=Path, default=Path(".env"))
     parser.add_argument("--docs", type=Path, default=Path("docs"))
     parser.add_argument("--caixa-de-entrada", type=Path,
@@ -39,14 +42,12 @@ def main() -> None:
         period = date.fromisoformat(f"{arguments.competencia}-01")
     except ValueError:
         parser.error("Competência inválida: use ano entre 0001 e 9999.")
-    if arguments.sem_referencias and (arguments.regerar or arguments.referencias or arguments.referencias_bancarias):
-        parser.error("--sem-referencias não combina com --regerar, --referencias ou --referencias-bancarias.")
     applied: list[str] = []
     warnings: list[str] = []
     contract_file = arguments.referencias or arguments.saida / CONTRACT_REFERENCE
-    bank_file = arguments.referencias_bancarias or arguments.saida / BANK_REFERENCE
-    if arguments.regerar and contract_file.name != "referencias.json":
-        parser.error("--regerar grava referencias.json; use --referencias apontando para um arquivo com esse nome.")
+    bank_file = arguments.referencias_bancarias
+    if contract_file.name != "referencias.json":
+        parser.error("A normalização grava referencias.json; use --referencias apontando para esse nome.")
     try:
         dataset = load_dataset(arguments.entrada)
         policies = None
@@ -55,58 +56,29 @@ def main() -> None:
             inbox_file = find_inbox_file(arguments.entrada, arguments.caixa_de_entrada)
             policies = parse_inbox(inbox_file) if inbox_file else default_inbox()
             applied.append(f"políticas confirmadas ({policies.source_file}): {len(policies.bindings)} vínculos, {len(policies.exemptions)} isenções")
-        if arguments.regerar:
-            from src.application.normalization import normalize_reference
-            from src.infrastructure.flow_log import FlowLog
-            from src.infrastructure.openai_normalizer import OpenAIInterpreter
-
-            with FlowLog(contract_file.parent) as log:
-                interpreter = OpenAIInterpreter(arguments.env_file, contract_file.parent / "cache_llm", log=log)
-                normalize_reference(dataset, arguments.entrada, contract_file.parent, interpreter, log=log, inbox=policies)
         bank_decisions = None
-        if not arguments.sem_referencias:
-            if bank_file.is_file():
-                from src.application.banking_reference import load_bank_reference
+        if bank_file is not None:
+            from src.application.banking_reference import load_bank_reference
+            bank_decisions = load_bank_reference(dataset, arguments.entrada, arguments.docs, bank_file, period)
+            applied.append(f"bancária aprovada por revisor ({len(bank_decisions)} decisões): {bank_file}")
+        else:
+            warnings.append("Classificação bancária apenas por regras; movimentos sem conta permanecem pendentes de revisão.")
+        from src.application.normalization import normalize_reference, load_reference
+        from src.infrastructure.flow_log import FlowLog
 
-                try:
-                    bank_decisions = load_bank_reference(
-                        dataset=dataset, data_dir=arguments.entrada, docs_dir=arguments.docs,
-                        reference_file=bank_file, period=period,
-                    )
-                    applied.append(f"bancária aprovada por revisor ({len(bank_decisions)} decisões): {bank_file}")
-                except ValueError as error:
-                    if arguments.referencias_bancarias:
-                        raise
-                    warnings.append(f"referência bancária {bank_file} NÃO aplicada ({error})")
-            elif arguments.referencias_bancarias:
-                raise ValueError(f"Referência bancária informada não existe: {bank_file}")
-            if contract_file.is_file():
-                from src.application.normalization import load_reference
-
-                try:
-                    dataset = load_reference(dataset, arguments.entrada, contract_file, inbox=policies)
-                    applied.append(f"contratual: {contract_file}")
-                except ValueError as error:
-                    if arguments.referencias:
-                        raise
-                    warnings.append(f"referência contratual {contract_file} NÃO aplicada ({error})")
-                    if policies is not None:
-                        from src.application.normalization import apply_inbox_policies
-                        dataset = apply_inbox_policies(dataset, policies)
-            elif arguments.referencias:
-                raise ValueError(f"Referência contratual informada não existe: {contract_file}")
-            elif policies is not None:
-                from src.application.normalization import apply_inbox_policies
-                dataset = apply_inbox_policies(dataset, policies)
-        elif policies is not None and not arguments.sem_politicas:
-            from src.application.normalization import apply_inbox_policies
-            dataset = apply_inbox_policies(dataset, policies)
+        with FlowLog(contract_file.parent) as log:
+            interpreter = OpenAIInterpreter(resolve_env_file(arguments.env_file),
+                contract_file.parent / "cache_llm", log=log, reuse_cache=False)
+            normalize_reference(dataset, arguments.entrada, contract_file.parent, interpreter, log=log, inbox=policies)
+        applied.append(f"normalização com IA ({interpreter.model})")
+        dataset = load_reference(dataset, arguments.entrada, contract_file, inbox=policies)
+        applied.append(f"contratual: {contract_file}")
         result = close_month(dataset, period, bank_decisions=bank_decisions, policies=policies)
         late_count = sum(1 for e in dataset.checkout if e.source.file.startswith("06_orbe"))
         export_csvs(result, arguments.saida)
     except DataPackError as error:
         parser.exit(2, f"Pacote inválido: {error}\n")
-    except (ValueError, OSError) as error:
+    except (ValueError, OSError, ModelUnavailable) as error:
         parser.exit(2, f"Fechamento não concluído: {error}\n")
     sys.stdout.write(render_summary(result, tuple(applied), tuple(warnings), str(arguments.saida), late_adjustments=late_count))
 

@@ -363,10 +363,6 @@ def generate_bank_reference(dataset: Dataset, data_dir: Path, docs_dir: Path, ou
                 else:
                     investigation = attempt
                     investigations.append({"movement_id": identifier, **attempt})
-            if tkey and tkey not in template_cache and (
-                accepted is None or accepted["missing_information"].strip() or errors
-            ):
-                blocked_patterns.add(tkey)
         missing = [item.motivo for item in issues if item.tipo not in {
             "CLASSIFICACAO_BANCARIA", "CONTA_NAO_LANCAVEL", "VALIDAR_RECONHECIMENTO_CONTABIL"}]
         if accepted and accepted["missing_information"].strip():

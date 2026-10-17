@@ -196,6 +196,24 @@ def check() -> None:
                 pass
             else:
                 raise AssertionError(f"Schema dinâmico aceitou valor inválido: {bad_kwargs}")
+        class Refusal(Interpreter):
+            def invoke(self, context, stage):
+                if stage == "RCA_BANCARIA":
+                    return super().invoke(context, stage)
+                self.calls.append((context, stage))
+                return BankProposal(movement_id=context["movement"]["movement_id"], account_code=None,
+                    evidence_ids=[context["movement"]["source_id"]],
+                    reason="Sem vínculo comprovado.", missing_information="Identificar o beneficiário.")
+
+        pix_entries = (
+            replace(entries[0], description="PIX ENVIADO LOJISTA UM", amount=Decimal("-100")),
+            replace(entries[2], description="PIX ENVIADO LOJISTA DOIS", amount=Decimal("-200")),
+        )
+        refusal = Refusal()
+        refused = generate_bank_reference(replace(dataset, banks=pix_entries), data, docs,
+            root / "recusas", period, refusal)
+        assert refused["summary"]["cases"] == 2 and refused["summary"]["proposals"] == 0
+        assert len(refusal.calls) == 4
         rem_op = RemittanceEntry(
             source=SourceRef("ponte.eml!rel.xlsx", "PC-0926-0001", 6, "Operações"),
             contracted_on=date(2026, 9, 1), settled_on=date(2026, 9, 2),
