@@ -1,9 +1,12 @@
 from collections import Counter
+from contextlib import redirect_stderr
 from dataclasses import replace
 from datetime import date
 import os
+import sys
 from decimal import Decimal
 from pathlib import Path
+from io import StringIO
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
@@ -17,6 +20,7 @@ from check_flow_log import check as check_flow_log
 from check_banking_reference import check as check_banking_reference
 from check_slack_inbox import check as check_slack_inbox
 
+from src.__main__ import main as closing_main
 from src.application.closing import TECHNICAL_ASSUMPTIONS, close_month
 from src.application.diagnostics import diagnose
 from src.domain.models import (
@@ -152,6 +156,26 @@ def check_http_boundaries() -> None:
     assert response.json()["premissas_tecnicas"]
 
 
+def check_cli_progress() -> None:
+    with TemporaryDirectory() as directory, patch.dict(os.environ, {"OPENAI_API_KEY": "", "OPENAI_MODEL": ""}):
+        stderr = StringIO()
+        with patch.object(sys, "argv", ["src", "--entrada", str(ROOT / "dados_tarvo"),
+            "--competencia", "2026-09", "--saida", str(Path(directory) / "saida"),
+            "--propostas-bancarias", str(Path(directory) / "referencias_bancarias.json"),
+            "--env-file", str(Path(directory) / "sem-credenciais.env")]), redirect_stderr(stderr):
+            try:
+                closing_main()
+            except SystemExit as error:
+                assert error.code == 2
+            else:
+                raise AssertionError("Fechamento sem credencial foi aceito.")
+        output = stderr.getvalue()
+        assert output.index("Lendo os dados financeiros") < output.index("Dados lidos:") < output.index(
+            "Gerando propostas bancárias com IA") < output.index("OPENAI_API_KEY ausente")
+        assert "Fechamento exportado" not in output
+        assert not (Path(directory) / "saida").exists()
+
+
 def check_real_closing() -> None:
     """Fechamento de set/2026 sem referência normalizada: somente dados_tarvo, sem vínculos externos."""
     dataset = load_dataset(ROOT / "dados_tarvo")
@@ -255,6 +279,7 @@ def check_financial_input() -> None:
 if __name__ == "__main__":
     check_diagnostics()
     check_http_boundaries()
+    check_cli_progress()
     check_financial_input()
     check_real_closing()
     check_checkout()

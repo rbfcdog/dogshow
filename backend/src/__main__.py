@@ -21,6 +21,24 @@ def resolve_env_file(path: Path) -> Path:
     return Path(__file__).resolve().parents[2] / ".env"
 
 
+def progress(message: str) -> None:
+    print(f"[fechamento] {message}", file=sys.stderr, flush=True)
+
+
+class ProgressInterpreter(OpenAIInterpreter):
+    def invoke(self, context: dict, stage: str):
+        label = {
+            "CLASSIFICACAO_BANCARIA": "classificação bancária",
+            "RCA_BANCARIA": "investigação bancária",
+            "NORMALIZACAO": "normalização contratual",
+            "RCA": "investigação contratual",
+        }[stage]
+        progress(f"IA · {label}: aguardando resposta do modelo {self.model}...")
+        result = super().invoke(context, stage)
+        progress(f"IA · {label}: resposta recebida.")
+        return result
+
+
 def main() -> None:
     parser = ArgumentParser(description="Fechamento Tarvo: lê os arquivos do mês, normaliza contratos com IA, "
         "gera os seis CSVs e imprime o resumo.")
@@ -51,7 +69,10 @@ def main() -> None:
     if contract_file.name != "referencias.json":
         parser.error("A normalização grava referencias.json; use --referencias apontando para esse nome.")
     try:
+        progress("Lendo os dados financeiros...")
         dataset = load_dataset(arguments.entrada)
+        progress(f"Dados lidos: {len(dataset.checkout)} linhas de checkout, "
+            f"{len(dataset.remittances)} de remessa e {len(dataset.banks)} movimentos bancários.")
         policies = None
         if not arguments.sem_politicas:
             from src.infrastructure.slack_inbox import find_inbox_file, parse_inbox, default_inbox
@@ -62,6 +83,7 @@ def main() -> None:
         bank_proposals = None
         if bank_file is not None:
             from src.application.banking_reference import load_bank_reference
+            progress("Validando referência bancária revisada...")
             bank_decisions = load_bank_reference(dataset, arguments.entrada, arguments.docs, bank_file, period)
             applied.append(f"bancária aprovada por revisor ({len(bank_decisions)} decisões): {bank_file}")
         else:
@@ -69,10 +91,12 @@ def main() -> None:
             if not arguments.propostas_bancarias.exists():
                 if arguments.propostas_bancarias.name != BANK_PROPOSALS.name:
                     raise ValueError(f"Propostas bancárias ausentes: {arguments.propostas_bancarias}")
-                bank_interpreter = OpenAIInterpreter(resolve_env_file(arguments.env_file),
+                progress("Gerando propostas bancárias com IA...")
+                bank_interpreter = ProgressInterpreter(resolve_env_file(arguments.env_file),
                     arguments.propostas_bancarias.parent / "cache_llm", reuse_cache=False)
                 generate_bank_reference(dataset, arguments.entrada, arguments.docs,
                     arguments.propostas_bancarias.parent, period, bank_interpreter)
+            progress("Validando propostas bancárias contra as fontes...")
             bank_proposals = load_bank_proposals(dataset, arguments.entrada, arguments.docs,
                 arguments.propostas_bancarias, period)
             applied.append(f"propostas bancárias da IA ({len(bank_proposals)} contas não aprovadas): {arguments.propostas_bancarias}")
@@ -80,17 +104,22 @@ def main() -> None:
         from src.application.normalization import normalize_reference, load_reference
         from src.infrastructure.flow_log import FlowLog
 
+        progress("Normalizando contratos com IA...")
         with FlowLog(contract_file.parent) as log:
-            interpreter = OpenAIInterpreter(resolve_env_file(arguments.env_file),
+            interpreter = ProgressInterpreter(resolve_env_file(arguments.env_file),
                 contract_file.parent / "cache_llm", log=log, reuse_cache=False)
             normalize_reference(dataset, arguments.entrada, contract_file.parent, interpreter, log=log, inbox=policies)
         applied.append(f"normalização com IA ({interpreter.model})")
+        progress("Validando contratos e vínculos com as fontes...")
         dataset = load_reference(dataset, arguments.entrada, contract_file, inbox=policies)
         applied.append(f"contratual: {contract_file}")
+        progress("Calculando checkout, remessas e classificação bancária...")
         result = close_month(dataset, period, bank_decisions=bank_decisions,
             bank_proposals=bank_proposals, policies=policies)
         late_count = sum(1 for e in dataset.checkout if e.source.file.startswith("06_orbe"))
+        progress("Exportando os seis CSVs...")
         export_csvs(result, arguments.saida)
+        progress("Fechamento exportado.")
     except DataPackError as error:
         parser.exit(2, f"Pacote inválido: {error}\n")
     except (ValueError, OSError, ModelUnavailable) as error:

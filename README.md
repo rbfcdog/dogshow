@@ -20,6 +20,7 @@ uv run --locked --project backend python -m src \
 ```
 
 Use um modelo com acesso a respostas estruturadas na sua conta, caso `gpt-4.1-mini` não esteja disponível. Também é possível configurar `OPENAI_API_KEY` e `OPENAI_MODEL` em `.env` na raiz, sem versioná-lo, em vez de exportar as variáveis. Variáveis exportadas têm precedência na CLI. **O último comando lê `dados_tarvo/` e grava `saida/`; não é preciso iniciar API ou frontend.** Na primeira execução, ele gera automaticamente as propostas bancárias com OpenAI e normaliza os contratos antes de exportar. Se existir `docs/` local, ele consulta esses documentos nas propostas; o diretório não está no repositório. Sem esses documentos, hipóteses sem evidência continuam como pendências.
+Durante a execução, o terminal mostra etapas determinísticas e cada consulta/resposta da IA em tempo real (`stderr`, com flush); o resumo final permanece em `stdout`. Falhas não imprimem confirmação de exportação.
 
 Confira os seis arquivos produzidos:
 
