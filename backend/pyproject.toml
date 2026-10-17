@@ -1,0 +1,23 @@
+[project]
+name = "tarvo-backend"
+version = "0.2.0"
+description = "Backend de fechamento financeiro rastreável da Tarvo"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "fastapi>=0.143.3",
+    "openpyxl>=3.1.5",
+    "uvicorn>=0.54.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.21,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "src"
+module-root = ""
+
+[dependency-groups]
+dev = [
+    "httpx2>=2.13.1",
+]
