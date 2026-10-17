@@ -70,7 +70,9 @@ def check() -> None:
     part = close_checkout(_dataset((negative_half,), (rounding_contract,)), period)
     assert part.commissions[0].comissao_brl == Decimal("-0.01")
     assert not part.invoices
-    assert part.pending[0].valor_brl == Decimal("-0.01") and part.pending[0].quem_decide == "Helena"
+    assert [(row.tipo, row.valor_brl, row.quem_decide) for row in part.pending] == [
+        ("SALDO_NEGATIVO_CHECKOUT", Decimal("-0.01"), "Financeiro"),
+    ]
     _assert_traces(part)
     part = close_checkout(_dataset((half, negative_half), (rounding_contract,)), period)
     assert part.commissions[0].comissao_brl == Decimal("0.00")
@@ -129,27 +131,51 @@ def check() -> None:
         part = close_checkout(_dataset((advance, invalid), (old_contract, new_contract)), period)
         assert part.commissions[0].comissao_brl == Decimal("0.15")
         assert len(part.pending) == 1 and part.pending[0].tipo == "CHECKOUT_BLOQUEADO"
+        assert part.pending[0].quem_decide == "Financeiro"
         _assert_traces(part)
 
-    casa = replace(contract, cnpj="00520815000100", merchant="Casa do Estudante")
+    # Casa do Estudante: o comentário da célula A13 só indica que a condição comercial precisa ser
+    # esclarecida. Não pode virar isenção: vale a taxa da planilha, sem nota até o Comercial definir.
+    casa = replace(
+        contract, cnpj="00520815000100", merchant="Casa do Estudante",
+        comments="conversar com Diego (comercial) sobre condição especial",
+    )
+    casa_sale = replace(sale, applied_rate=Decimal("0.03"))
     casa_advance = replace(advance, occurred_on=date(2026, 9, 5))
     casa_refund = replace(august_refund, applied_rate=Decimal("0.02"))
-    part = close_checkout(_dataset((sale, casa_advance, casa_refund), (casa,)), period)
-    assert part.commissions[0].comissao_brl == Decimal("-2.00")
+    part = close_checkout(_dataset((casa_sale, casa_advance, casa_refund), (casa,)), period)
+    assert [(row.cnpj, row.comissao_brl) for row in part.commissions] == [("00520815000100", Decimal("0.15"))]
     assert not part.invoices
-    assert {row.ref_origem: row.diferenca_brl for row in part.divergences} == {
-        "sale": Decimal("2.00"), "advance": Decimal("0.15"),
-    }
-    assert all("Comercial" in row.quem_decide for row in part.pending if row.tipo == "DIVERGENCIA_CHECKOUT")
-    assert all(row.taxa_contratada_pct == 0 for row in part.divergences)
+    assert [(row.ref_origem, row.taxa_contratada_pct, row.taxa_aplicada_pct, row.diferenca_brl)
+        for row in part.divergences] == [("sale", Decimal("2.00"), Decimal("3.00"), Decimal("1.00"))]
+    assert all(row.taxa_contratada_pct != 0 for row in part.divergences)
+    casa_trace = {item.ref_origem: item.valor for item in part.traces if item.id_saida == part.commissions[0].id_saida}
+    assert casa_trace == {"advance": Decimal("0.15"), "sale": Decimal("2.00"), "refund": Decimal("-2.00")}
+    condition = [row for row in part.pending if row.tipo == "CONDICAO_COMERCIAL_NAO_DEFINIDA"]
+    assert len(condition) == 1 and condition[0].valor_brl is None and condition[0].quem_decide == "Comercial"
+    assert condition[0].id_saida == "condicao-comercial:2026-09:00520815000100"
+    assert condition[0].ref_origem == "sale"
+    assert "isenção" in condition[0].motivo and "Nota bloqueada" in condition[0].motivo
+    assert not any(item.id_saida == condition[0].id_saida for item in part.traces)
+    assert [(row.tipo, row.quem_decide) for row in part.pending if row.tipo != "CONDICAO_COMERCIAL_NAO_DEFINIDA"] == [
+        ("DIVERGENCIA_CHECKOUT", "Financeiro / Comercial"),
+    ]
     _assert_traces(part)
-    exempt_only = close_checkout(_dataset((sale, casa_advance), (casa,)), period)
-    assert exempt_only.commissions[0].comissao_brl == 0 and not exempt_only.invoices
-    _assert_traces(exempt_only)
+    note_only = replace(casa, comments=None, note="cliente estratégico - ver c/ comercial")
+    for flagged in (note_only, replace(casa, comments="Condição especial a definir")):
+        flagged_part = close_checkout(_dataset((sale,), (flagged,)), period)
+        assert flagged_part.commissions[0].comissao_brl == Decimal("2.00") and not flagged_part.invoices
+        assert [row.tipo for row in flagged_part.pending] == ["CONDICAO_COMERCIAL_NAO_DEFINIDA"]
+        _assert_traces(flagged_part)
+    plain = close_checkout(_dataset((sale,), (replace(casa, comments=None, note="cliente estratégico"),)), period)
+    assert plain.invoices[0].valor_brl == Decimal("2.00") and not plain.pending
     casa_august = replace(sale, occurred_on=date(2026, 8, 22))
     casa_pack_refund = replace(casa_refund, original_ref="sale", original_on=casa_august.occurred_on)
     part = close_checkout(_dataset((casa_august, casa_pack_refund), (casa,)), period)
-    assert part.commissions[0].comissao_brl == Decimal("-2.00") and not part.divergences
+    assert part.commissions[0].comissao_brl == Decimal("-2.00") and not part.divergences and not part.invoices
+    assert {row.tipo: row.quem_decide for row in part.pending} == {
+        "CONDICAO_COMERCIAL_NAO_DEFINIDA": "Comercial", "SALDO_NEGATIVO_CHECKOUT": "Financeiro",
+    }
     _assert_traces(part)
 
     atlas = replace(sale, establishment_code="1076801732", merchant="Atlas", fee=Decimal("7.31"))
@@ -180,10 +206,29 @@ def check() -> None:
     part = close_checkout(_dataset(band_entries, (contract,)), period)
     assert part.commissions[0].comissao_brl == Decimal("17.50") and not part.divergences
     _assert_traces(part)
-    alias_contract = replace(contract, cnpj="66564512000199", establishment_code=None)
-    alias_sale = replace(sale, establishment_code="1043300981")
-    part = close_checkout(_dataset((alias_sale,), (alias_contract,)), period)
-    assert part.commissions[0].cnpj == alias_contract.cnpj and part.commissions[0].comissao_brl == Decimal("2.00")
+    # Sem vínculos EC→CNPJ vindos de conversas: contratos sem EC na planilha não casam com a Orbe.
+    for index, (ec, taxpayer) in enumerate((
+        ("1043300981", "66564512000199"), ("1043396662", "78576234000179"),
+        ("1038867654", "07752116000126"), ("1076801732", "00000000000191"),
+    )):
+        alias_contract = replace(contract, cnpj=taxpayer, establishment_code=None,
+            source=SourceRef("contratos.xlsx", f"A{20 + index}:L{20 + index}", 20 + index, "Taxas vigentes"))
+        alias_sale = replace(sale, establishment_code=ec)
+        part = close_checkout(_dataset((alias_sale,), (contract, alias_contract)), period)
+        assert not part.commissions and not part.invoices and not part.divergences
+        assert [(row.tipo, row.valor_brl, row.quem_decide) for row in part.pending] == [
+            ("CHECKOUT_BLOQUEADO", Decimal("1.99"), "Comercial"),
+        ]
+        assert f"EC {ec}: encontrados 0 contratos" in part.pending[0].motivo
+        assert "não comissão apurada" in part.pending[0].motivo
+        _assert_traces(part)
+    explicit = close_checkout(_dataset((replace(sale, establishment_code="1043300981"),),
+        (replace(contract, cnpj="66564512000199", establishment_code="1043300981"),)), period)
+    assert explicit.commissions[0].cnpj == "66564512000199" and explicit.commissions[0].comissao_brl == Decimal("2.00")
+    _assert_traces(explicit)
+    negative_sale = replace(sale, gross=Decimal("-1"))
+    part = close_checkout(_dataset((negative_sale,), (contract,)), period)
+    assert [(row.tipo, row.quem_decide) for row in part.pending] == [("CHECKOUT_BLOQUEADO", "Financeiro")]
     _assert_traces(part)
     for repeated in (
         (sale, replace(sale, source=replace(sale.source, row=3))),

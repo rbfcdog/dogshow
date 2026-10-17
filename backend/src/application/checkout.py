@@ -12,9 +12,8 @@ from src.domain.closing import (
 )
 from src.domain.models import CheckoutEntry, DataPackError, Dataset
 from src.domain.policies import (
-    CASA_CNPJ,
     ZERO,
-    checkout_exempt,
+    has_commercial_question,
     contract_candidates,
     in_period,
     money,
@@ -84,6 +83,7 @@ def close_checkout(dataset: Dataset, period: date) -> ClosingPart:
     divergences = []
     pending = []
     traces = []
+    commercial_questions: set[str] = set()
     entries = sorted(
         (entry for entry in dataset.checkout if in_period(entry.occurred_on, period)),
         key=lambda entry: (entry.occurred_on, entry.source.ref),
@@ -106,29 +106,28 @@ def close_checkout(dataset: Dataset, period: date) -> ClosingPart:
                 )
             contract = candidates[0]
             key = _rate_key(reference)
-            exempt = checkout_exempt(contract, reference_date)
-            if not exempt and key not in contract.rates:
+            if key not in contract.rates:
                 raise ValueError(f"Contrato sem taxa histórica para {key}; Comercial deve confirmar.")
-            rate = ZERO if exempt else contract.rates[key]
+            rate = contract.rates[key]
+            if has_commercial_question(contract):
+                commercial_questions.add(contract.cnpj)
         except ValueError as error:
             identifier = output_id("pendencia-checkout-bloqueado", period, entry.source.ref)
             reason = f"{error} Valor informado é a taxa reportada pela Orbe, não comissão apurada. Sem faturamento deste evento."
             pending.append(Pending(
                 identifier, "CHECKOUT_BLOQUEADO", entry.source.ref, entry.fee, reason,
-                "Comercial" if "contrato" in str(error).lower() else "Helena",
+                "Comercial" if "contrato" in str(error).lower() else "Financeiro",
             ))
             traces.append(trace(identifier, entry.source, entry.fee, "Taxa reportada; comissão indeterminada: " + str(error)))
             continue
         amount = money(entry.gross * rate)
         rule = (
-            f"{entry.kind}; bruto × taxa contratada {rate}; HALF_UP por linha; "
+            f"Apuração preliminar: {entry.kind}; bruto × taxa da planilha {rate}; convenção técnica HALF_UP por linha; "
             f"faixa {key}; data original {reference_date.isoformat()}; "
             f"contrato {contract.source.file}/{contract.source.sheet or ''}/{contract.source.ref}; "
             f"referência {entry.original_ref or reference.source.ref}; "
             f"campos históricos {reference.source.file}/{reference.source.ref}"
         )
-        if exempt:
-            rule += "; isenção Casa setembro-dezembro/2026 na data original"
         contributions[contract.cnpj].append((entry, amount, rule))
         nominal = (reference_date, contract.merchant)
         if contract.cnpj not in names or nominal > names[contract.cnpj]:
@@ -150,7 +149,7 @@ def close_checkout(dataset: Dataset, period: date) -> ClosingPart:
             )
             pending.append(Pending(
                 pending_id, "DIVERGENCIA_CHECKOUT", entry.source.ref, difference, reason,
-                "Helena / Financeiro e Comercial" if contract.cnpj == CASA_CNPJ else "Helena",
+                "Financeiro / Comercial",
             ))
             traces.append(trace(pending_id, entry.source, difference, difference_rule))
     commissions = []
@@ -161,19 +160,25 @@ def close_checkout(dataset: Dataset, period: date) -> ClosingPart:
         identifier = output_id("comissao-checkout", period, cnpj)
         commissions.append(Commission(identifier, cnpj, merchant, "CHECKOUT", total))
         traces.extend(trace(identifier, entry.source, amount, rule) for entry, amount, rule in rows)
-        if total > ZERO:
+        if cnpj in commercial_questions:
+            pending.append(Pending(output_id("condicao-comercial", period, cnpj), "CONDICAO_COMERCIAL_NAO_DEFINIDA",
+                rows[0][0].source.ref, None,
+                "Observação/comentário da planilha menciona condição comercial não detalhada. "
+                "Cálculo preliminar usa taxas preenchidas; não há evidência de isenção. Nota bloqueada até esclarecer a condição.",
+                "Comercial"))
+        elif total > ZERO:
             invoice_id = output_id("nota-checkout", period, cnpj)
             invoices.append(Invoice(
                 invoice_id, cnpj, merchant, "CHECKOUT", total,
-                f"Serviços de checkout, MDR e antecipação — competência {period_key(period)}.",
+                f"Proposta preliminar: checkout, MDR e antecipação — competência {period_key(period)}; validar política fiscal.",
             ))
             traces.extend(trace(invoice_id, entry.source, amount, rule) for entry, amount, rule in rows)
-        elif total < ZERO:
+        if total < ZERO:
             pending_id = output_id("pendencia-checkout-negativo", period, cnpj)
             pending.append(Pending(
                 pending_id, "SALDO_NEGATIVO_CHECKOUT", rows[0][0].source.ref, total,
-                f"Saldo agregado negativo do CNPJ {cnpj}: sem nota fiscal e sem transporte automático; Helena deve tratar com o lojista.",
-                "Helena",
+                f"Saldo agregado negativo do CNPJ {cnpj}: o pacote não define emissão fiscal ou transporte; validar tratamento.",
+                "Financeiro",
             ))
             traces.extend(trace(pending_id, entry.source, amount, rule) for entry, amount, rule in rows)
     return ClosingPart(

@@ -6,9 +6,17 @@ import re
 from src.application.banking import classify_banks
 from src.application.checkout import close_checkout
 from src.application.remittances import close_remittances
-from src.domain.closing import ClosingResult
+from src.domain.closing import ClosingResult, Pending
 from src.domain.models import Dataset
-from src.domain.policies import ZERO, period_key
+from src.domain.policies import ZERO, period_key, in_period, output_id
+
+TECHNICAL_ASSUMPTIONS = (
+    "Somente dados_tarvo é fonte de fatos. Resultados são preliminares até validar políticas não documentadas no pacote.",
+    "Convenção técnica: Decimal e HALF_UP por linha, sinais preservados; não apresentada como confirmação do financeiro.",
+    "Checkout: projeção bruto × taxa da planilha; mês do movimento e data original para reversões são premissas de apuração.",
+    "Remessas: data de contratação para agrupamento; repetição econômica idêntica conta uma vez como premissa técnica sinalizada.",
+    "Notas são propostas agregadas; regras fiscais e tratamento de ajustes precisam de evidência adicional no pacote.",
+)
 
 
 def validate_closing(result: ClosingResult, dataset: Dataset) -> None:
@@ -67,16 +75,26 @@ def close_month(dataset: Dataset, period: date) -> ClosingResult:
     if period.day != 1:
         raise ValueError("A competência deve ser o primeiro dia do mês.")
     parts = (close_checkout(dataset, period), close_remittances(dataset, period), classify_banks(dataset, period))
-    pending = tuple(row for part in parts for row in part.pending)
+    policy_pending = []
+    for name, entries, date_field in (("CHECKOUT", dataset.checkout, "occurred_on"),
+        ("REMESSA", dataset.remittances, "contracted_on")):
+        first = next((e for e in entries if in_period(getattr(e, date_field), period)), None)
+        if first:
+            policy_pending.append(Pending(output_id("politica-pacote", period, name), "VALIDAR_POLITICA_APURACAO",
+                first.source.ref, None,
+                f"{name}: o pacote não confirma integralmente corte, arredondamento, ajustes e política fiscal. "
+                "Resultados são projeções sob premissas técnicas declaradas, não fechamento aprovado.", "Financeiro"))
+    pending = tuple(row for part in parts for row in part.pending) + tuple(policy_pending)
     result = ClosingResult(
         competencia=period_key(period),
-        status="CONCLUIDO_COM_PENDENCIAS" if pending else "CONCLUIDO",
+        status="PRELIMINAR_COM_PENDENCIAS" if pending else "CONCLUIDO",
         comissoes_por_lojista=tuple(row for part in parts for row in part.commissions),
         divergencias_taxa=tuple(row for part in parts for row in part.divergences),
         notas_a_emitir=tuple(row for part in parts for row in part.invoices),
         lancamentos_classificados=tuple(row for part in parts for row in part.movements),
         pendencias=pending,
         rastro=tuple(row for part in parts for row in part.traces),
+        premissas_tecnicas=TECHNICAL_ASSUMPTIONS,
     )
     validate_closing(result, dataset)
     return result

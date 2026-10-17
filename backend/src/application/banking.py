@@ -19,37 +19,33 @@ def _classify(entry: BankEntry) -> tuple[str, Decimal, str]:
     exact = Decimal("1")
     assumed = Decimal("0.80")
     if "TRANSF ENTRE CONTAS" in description or "MESMA TITULARIDADE" in description:
-        return "1.1.09.001", exact, "Transferência entre contas próprias; não representa receita ou despesa."
+        return "1.1.09.001", exact, "Descrição indica transferência entre contas próprias; não representa receita ou despesa."
     if entry.amount > 0:
         if entry.bank == "AURORA":
             if description.startswith("TED RECEB") and "ORBE ADQUIRENCIA" in description:
-                return "1.1.03.001", exact, "Liquidação Orbe baixa recebíveis; sem conciliação de parcelas ou igualdade com o líquido mensal."
-            if description.startswith("DEVOLUCAO PIX") and "MUNDO ABERTO" in description:
-                return "2.1.01.001", exact, "Devolução de repasse Mundo Aberto restabelece obrigação com o lojista; não é receita."
+                return "1.1.03.001", assumed, "Inferência pela descrição e catálogo: possível baixa de recebível Orbe; reconhecimento anterior não comprovado no pacote."
+            if description.startswith("DEVOLUCAO PIX"):
+                return "", Decimal("0"), "Devolução identificada, mas origem, motivo e obrigação anterior não comprovados no pacote."
             if description.startswith("PIX RECEB") and "SEM IDENTIFICACAO" in description:
-                return "1.1.09.002", assumed, "Premissa do time: usar Créditos não identificados até Helena identificar o PIX; não é receita."
+                return "1.1.09.002", assumed, "Proposta de conta transitória existente para crédito não identificado; validar finalidade e classificação."
         if entry.bank == "MERIDIANO":
-            if "REPASSE COMISSAO 08/2026" in description and "PONTE CAMBIO" in description:
-                return "1.1.03.002", exact, "Repasse Ponte de agosto já apropriado baixa comissão a receber; não é receita de setembro."
-            if description.startswith("PIX RECEB") and "SEM IDENTIFICACAO" not in description:
-                return "2.1.02.001", exact, "PIX de cliente no Meridiano representa recursos para remessa, não receita."
+            if "REPASSE COMISSAO" in description:
+                return "1.1.03.002", assumed, "Possível baixa de comissão de câmbio a receber; apropriação anterior não consta no pacote."
+            if description.startswith("PIX RECEB"):
+                return "", Decimal("0"), "PIX recebido: o pacote não comprova a finalidade do recurso (remessa ou outra)."
         if description.startswith("RESGATE"):
             return "1.1.02.001", exact, "Resgate de aplicação baixa o ativo; não inferir rendimento por diferença."
         if description.startswith("RENDIMENTO"):
             return "3.2.01", exact, "Rendimento explicitamente identificado no extrato."
     if entry.amount < 0:
-        if entry.bank == "AURORA" and in_period(entry.occurred_on, date(2026, 9, 1)):
-            for marker, code in (
-                ("PAGTO SALARIOS - FOLHA 08/2026", "2.1.04.001"),
-                ("GPS INSS 08/2026", "2.1.04.002"),
-                ("GRF FGTS 08/2026", "2.1.04.003"),
-                ("PAGTO ISS SAO PAULO DAMSP 08/2026", "2.1.03.003"),
-                ("DEBITO DARF 0561 IRRF", "2.1.03.004"),
-                ("DEBITO DARF 8109 PIS", "2.1.03.001"),
-                ("DEBITO DARF 2172 COFINS", "2.1.03.002"),
-            ):
-                if description == marker:
-                    return code, exact, "Folha ou tributo de agosto já provisionado: baixa do passivo, sem nova despesa em setembro."
+        for marker, code in (
+            ("PAGTO SALARIOS", "2.1.04.001"), ("GPS INSS", "2.1.04.002"),
+            ("GRF FGTS", "2.1.04.003"), ("PAGTO ISS", "2.1.03.003"),
+            ("DEBITO DARF 0561 IRRF", "2.1.03.004"), ("DEBITO DARF 8109 PIS", "2.1.03.001"),
+            ("DEBITO DARF 2172 COFINS", "2.1.03.002"),
+        ):
+            if description.startswith(marker):
+                return code, assumed, "Proposta de baixa de obrigação pela descrição; o pacote não comprova provisão anterior."
         for marker, code in (
             ("TAR ", "4.2.01"),
             ("TARIFA ", "4.2.01"),
@@ -62,14 +58,14 @@ def _classify(entry: BankEntry) -> tuple[str, Decimal, str]:
             ("IOF S/ OPERACAO CREDITO", "4.3.01"),
         ):
             if description.startswith(marker):
-                return code, exact, "Despesa identificada no extrato e não provisionada, conforme confirmação financeira."
+                return code, assumed, "Categoria inferida pela descrição; validar despesa ou baixa de obrigação, sem provisão comprovada no pacote."
         if description.startswith("APLICACAO"):
             return "1.1.02.001", exact, "Aplicação de principal constitui ativo financeiro, não despesa."
         if entry.bank == "MERIDIANO" and description.startswith("TED ENVIADA PONTE CAMBIO") and "LIQ OPERACOES" in description:
-            return "2.1.02.001", exact, "Liquidação de operações na Ponte baixa recursos de clientes para remessas."
+            return "2.1.02.001", assumed, "Possível liquidação de remessas indicada no texto; validar origem dos recursos e contrapartida."
         if entry.bank == "AURORA" and description.startswith("PIX ENVIADO "):
-            return "2.1.01.001", assumed, "Premissa do time: PIX enviado pelo Aurora, após fornecedores específicos, baixa repasse a lojista."
-    return "", Decimal("0"), "Descrição sem regra evidenciada: contrapartida não identificada, sem presumir conta ou receita."
+            return "", Decimal("0"), "PIX enviado sem documento no pacote que comprove repasse ou despesa; finalidade pendente."
+    return "", Decimal("0"), "Descrição sem regra evidenciada no pacote: contrapartida não identificada, sem presumir conta ou receita."
 
 
 def classify_banks(dataset: Dataset, period: date) -> ClosingPart:
@@ -102,15 +98,12 @@ def classify_banks(dataset: Dataset, period: date) -> ClosingPart:
                 code = ""
                 confidence = Decimal("0")
                 rule = issues[-1][1]
+            elif confidence < Decimal("1"):
+                issues.append(("VALIDAR_RECONHECIMENTO_CONTABIL", rule))
         if proposed_code == "1.1.09.002":
             issues.append((
                 "IDENTIFICAR_PIX",
-                "Identificar origem e finalidade do PIX recebido; valor é crédito bancário, não receita. Uso da transitória 1.1.09.002 é decisão justificada do time, não resposta literal de Helena.",
-            ))
-        if proposed_code == "2.1.01.001" and entry.amount > 0:
-            issues.append((
-                "MOTIVO_DEVOLUCAO_PIX",
-                "Helena deve apurar o motivo do PIX de repasse Mundo Aberto que voltou; o valor restabelece obrigação com o lojista e não constitui receita.",
+                "Identificar origem e finalidade do PIX; conta transitória é proposta técnica, não receita comprovada.",
             ))
         if proposed_code == "1.1.09.001":
             group = transfers[(entry.occurred_on, abs(entry.amount))]
@@ -121,18 +114,10 @@ def classify_banks(dataset: Dataset, period: date) -> ClosingPart:
             if matched:
                 counterpart = group[1] if group[0] is entry else group[0]
                 rule += f" Par inequívoco por data e valor: {counterpart.bank}/{counterpart.source.ref}."
-            elif (
-                entry.bank == "AURORA" and entry.source.ref == "L92"
-                and entry.occurred_on == date(2026, 9, 30) and entry.amount == Decimal("-300000")
-            ):
-                issues.append((
-                    "TRANSFERENCIA_EM_TRANSITO",
-                    "Transferência própria em trânsito: saiu do Aurora em 30/09/2026 e crédito no Meridiano em 01/10/2026 foi confirmado por Helena. Conferir extrato de outubro quando disponível; não é erro, perda ou recrédito de setembro.",
-                ))
             else:
                 issues.append((
                     "CONCILIAR_TRANSFERENCIA_PROPRIA",
-                    "Transferência própria sem par inequívoco entre bancos por data e valor no mês; conferir comprovante e eventual trânsito, sem inventar entrada, receita ou perda.",
+                    "Transferência própria sem par inequívoco entre os extratos do pacote por data e valor; conferir comprovante e eventual trânsito, sem inventar entrada, receita ou perda.",
                 ))
         movements.append(ClassifiedMovement(
             identifier, entry.bank, entry.source.ref, entry.occurred_on.isoformat(),
@@ -141,6 +126,6 @@ def classify_banks(dataset: Dataset, period: date) -> ClosingPart:
         traces.append(trace(identifier, entry.source, amount, rule))
         for kind, reason in issues:
             pending_id = output_id("pendencia", period, kind, entry.bank, entry.source.file, entry.source.ref)
-            pending.append(Pending(pending_id, kind, entry.source.ref, amount, reason, "Helena"))
+            pending.append(Pending(pending_id, kind, entry.source.ref, amount, reason, "Financeiro"))
             traces.append(trace(pending_id, entry.source, amount, reason))
     return ClosingPart(movements=tuple(movements), pending=tuple(pending), traces=tuple(traces))

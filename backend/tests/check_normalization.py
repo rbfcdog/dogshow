@@ -1,6 +1,8 @@
 import csv
 import json
 import os
+import re
+import shutil
 from collections import Counter
 from contextlib import redirect_stdout
 from dataclasses import replace
@@ -10,7 +12,7 @@ from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 from openai import APIError
 from pydantic import ValidationError
@@ -25,12 +27,14 @@ from src.application.normalization import (
     normalize_reference,
     validate_proposal,
 )
-from src.domain.models import CheckoutEntry, Contract, Dataset, SourceRef
+from src.domain.models import CheckoutEntry, Contract, DataPackError, Dataset, SourceRef
 from src.domain.normalization import ContractProposal, Investigation
-from src.domain.policies import ESTABLISHMENT_BINDINGS, active_on, contract_candidates
+from src.domain.policies import active_on, contract_candidates, has_commercial_question
 from src.infrastructure.normalization_sources import (
     contract_id,
     contract_rows,
+    document_chunks,
+    input_manifest,
     json_text,
     normalize_name,
     orbe_candidates,
@@ -39,7 +43,14 @@ from src.infrastructure.normalization_sources import (
 )
 from src.infrastructure.openai_normalizer import ModelUnavailable, OpenAIInterpreter, SYSTEM_PROMPT
 from src.infrastructure.readers import load_dataset
+from src.infrastructure.source_scope import DATA_ROOT, SOURCE_SCOPE, require_data_dir, require_source_file
 from src.normalizar import main as normalize_main
+
+ROOT = Path(__file__).resolve().parents[2]
+DATA_DIR = ROOT / "dados_tarvo"
+UNBOUND_ECS = {"1038867654", "1043300981", "1043396662", "1076801732"}
+SOURCE_FILES = {path.name for path in DATA_DIR.iterdir()
+    if path.is_file() and path.suffix.lower() in {".csv", ".ofx", ".eml"}}
 
 
 def _proposal() -> dict:
@@ -145,22 +156,20 @@ def _check_candidates() -> None:
     dataset = Dataset(entries, (), (), (), (), {}, {})
     selected = orbe_candidates(focal, dataset, threshold=90, sample_limit=2)
     by_ec = {candidate["establishment_code"]: candidate for candidate in selected}
-    assert set(by_ec) == {"EC-EXATO", "1043300981", "EC-NOME"}
-    assert by_ec["1043300981"]["confirmed_cnpj"] == focal["cnpj"]
-    assert by_ec["1043300981"]["confirmation_source"]
-    assert by_ec["EC-NOME"]["confirmed_cnpj"] is None
-    assert by_ec["EC-NOME"]["confirmation_source"] is None
+    # 1043300981 não entra por CNPJ: a Orbe não tem coluna de CNPJ e não existem vínculos externos.
+    assert set(by_ec) == {"EC-EXATO", "EC-NOME"}
     assert by_ec["EC-NOME"]["name_score"] == 100
     for candidate in selected:
+        assert set(candidate) == {"establishment_code", "names", "name_score", "total_rows", "samples"}
         assert candidate["total_rows"] == 3
         assert [sample["source"]["ref"] for sample in candidate["samples"]] == ["T1", "T2"]
         assert {sample["establishment_code"] for sample in candidate["samples"]} == {candidate["establishment_code"]}
     assert orbe_candidates(focal, replace(dataset, checkout=tuple(reversed(entries))), 90, 2) == selected
     assert all(len(candidate["samples"]) == 1 for candidate in orbe_candidates(focal, dataset, 90, 1))
-    unconfirmed = {**focal, "cnpj": "99999999000199"}
-    assert {candidate["establishment_code"] for candidate in orbe_candidates(unconfirmed, dataset, 90, 2)} == {
-        "EC-EXATO", "EC-NOME",
-    }
+    other_cnpj = {**focal, "cnpj": "99999999000199"}
+    assert orbe_candidates(other_cnpj, dataset, 90, 2) == selected
+    by_name = {**focal, "merchant": "Mercado Azul", "establishment_code": None}
+    assert {c["establishment_code"] for c in orbe_candidates(by_name, dataset, 90, 2)} == {"1043300981"}
 
 
 def _check_validity() -> None:
@@ -213,6 +222,23 @@ def _check_real_contracts() -> None:
     assert set(casa["cells"]) == {f"{column}13" for column in "ABCDEFGHIJKL"}
     for cell in casa["cells"].values():
         assert set(cell) == {"value", "format", "type", "comment"}
+    casa_contract = next(contract for contract in dataset.contracts if contract.source.ref == "A13:L13")
+    assert casa_contract.comments == casa["cells"]["A13"]["comment"]
+    assert casa_contract.rates and all(rate > 0 for rate in casa_contract.rates.values())
+    assert has_commercial_question(casa_contract)
+    questioned = {contract.source.ref for contract in dataset.contracts if has_commercial_question(contract)}
+    assert questioned == {"A13:L13"}
+    assert all(contract.comments is None for contract in dataset.contracts if contract is not casa_contract)
+    terms = dataset.partner_terms
+    assert terms is not None and terms.participation == Decimal("0.5")
+    assert terms.cnpj == "75374179000146" and terms.name == "Ponte Câmbio S.A."
+    assert terms.source == SourceRef("03_email_ponte_cambio_relatorio_set2026.eml", "MIME:text/plain")
+    standard = {contract.source.ref for contract in dataset.contracts if contract.remittance_rate is None}
+    assert {"A6:L6", "A7:L7", "A8:L8", "A9:L9", "A16:L16"} <= standard
+    assert next(c for c in dataset.contracts if c.source.ref == "A15:L15").remittance_rate == Decimal("0.012")
+    unbound = {contract.cnpj for contract in dataset.contracts if contract.establishment_code is None}
+    assert {"78576234000179", "07752116000126", "66564512000199"} <= unbound
+    assert not UNBOUND_ECS & {contract.establishment_code for contract in dataset.contracts}
 
     bridge = [row for row in current if row["cnpj"] == "22224579000109"]
     assert len(bridge) == 2
@@ -256,9 +282,22 @@ def _check_interpreter() -> None:
             assert interpreter.model == "modelo-ficticio-teste"
             factory.assert_called_once_with(timeout=120, max_retries=2)
             context = {
+                "source_scope": SOURCE_SCOPE,
                 "focal": {"source_id": proposal.source_id}, "candidates": [],
                 "sample": {"rate": Decimal("0.0269"), "on": date(2026, 9, 14)},
             }
+            unscoped = {key: value for key, value in context.items() if key != "source_scope"}
+            for invalid in (unscoped, {**context, "source_scope": "docs"}, {**context, "source_scope": None},
+                    {**context, "source_scope": "dados_tarvo_only_v1"}):
+                for stage in ("NORMALIZACAO", "RCA"):
+                    try:
+                        interpreter.invoke(invalid, stage)
+                    except ModelUnavailable as error:
+                        assert "escopo" in str(error) and "recusada" in str(error)
+                    else:
+                        raise AssertionError("Contexto sem escopo dados_tarvo foi enviado ao modelo.")
+            client.responses.parse.assert_not_called()
+            assert not (root / "cache").exists()
             assert interpreter.invoke(context, "NORMALIZACAO") == proposal
             client.responses.parse.assert_called_once_with(
                 model="modelo-ficticio-teste",
@@ -277,6 +316,9 @@ def _check_interpreter() -> None:
             assert record["usage"] == usage and record["response_id"] == "resp-ficticia"
             assert record["response"] == proposal.model_dump()
             assert record["request"]["schema"] == ContractProposal.model_json_schema()
+            assert record["request"]["source_scope"] == SOURCE_SCOPE == "dados_tarvo_only_v2"
+            assert record["request"]["context"]["source_scope"] == SOURCE_SCOPE
+            assert "SOMENTE" in record["request"]["system"] and "dados_tarvo" in record["request"]["system"]
             assert record["request"]["context"]["sample"] == {"rate": "0.0269", "on": "2026-09-14"}
 
             assert interpreter.invoke({**context, "extra_evidence": ["doc:L1"]}, "NORMALIZACAO") == proposal
@@ -336,57 +378,85 @@ def _check_interpreter() -> None:
             factory.assert_not_called()
 
 
-def _proposal_for_row(row: dict, *, pending: bool = False) -> ContractProposal:
-    ec = row["establishment_code"] or next(
-        (ec for ec, cnpj in ESTABLISHMENT_BINDINGS.items() if cnpj == row["cnpj"]), None,
-    )
+def _proposal_for_row(row: dict, *, ec: str | None = None, evidence: tuple[str, ...] = ()) -> ContractProposal:
     disposition = "INATIVO" if "INATIVO" in (row["note"] or "").upper() else (
-        "PENDENTE" if pending or not row["validity"] else "UTILIZAVEL"
+        "UTILIZAVEL" if row["validity"] else "PENDENTE"
     )
     start, end = explicit_bounds(row["validity"]) if row["validity"] else (None, None)
     return ContractProposal(
-        source_id=row["source_id"], establishment_code=ec,
+        source_id=row["source_id"], establishment_code=row["establishment_code"] or ec,
         validity_start=start.isoformat() if start else None,
         validity_end=end.isoformat() if end else None,
-        disposition=disposition, evidence_ids=[row["source_id"]],
-        reason="Proposta de teste baseada exclusivamente na linha e nos vínculos confirmados.",
+        disposition=disposition, evidence_ids=[row["source_id"], *evidence],
+        reason="Proposta de teste baseada exclusivamente na linha contratual e no contexto recebido.",
     )
 
 
+def _assert_scoped(context: dict) -> None:
+    assert context["source_scope"] == SOURCE_SCOPE
+    for document in context.get("documents", []):
+        assert document["file"] in SOURCE_FILES and document["source_id"].startswith(document["file"])
+    if "searched_documents" in context:
+        assert set(context["searched_documents"]) == SOURCE_FILES
+
+
 class _ReferenceInterpreter:
+    """Fake conservador: preserva o EC da planilha e nunca deduz vínculo; RCA só diagnostica."""
+
     model = "interpretador-fake-sem-api"
 
     def __init__(self):
         self.calls: list[tuple[str, dict]] = []
 
     def invoke(self, context: dict, stage: str) -> ContractProposal | Investigation:
+        _assert_scoped(context)
         self.calls.append((stage, context))
         focal = context["focal"]
         if stage == "NORMALIZACAO":
             assert not focal["historical"]
-            proposal = _proposal_for_row(focal, pending=focal["merchant"] == "Horizonte Viagens")
+            proposal = _proposal_for_row(focal)
             if focal["source_id"].endswith("!A6:L6"):
                 proposal = proposal.model_copy(update={"validity_end": "14/09/2026"})
             return proposal
-        assert stage == "RCA"
-        if focal["establishment_code"] == "1043396662":
-            row = next(row for row in context["related_contracts"]
-                if row["cnpj"] == "78576234000179" and not row["historical"])
-            proposal = _proposal_for_row(row)
-            return Investigation(
-                diagnosis="Horizonte Viagens possui linha atual e vínculo confirmado pelo financeiro.",
-                hypotheses=[], evidence_ids=proposal.evidence_ids, proposals=[proposal],
-                missing_information="",
-            )
-        assert focal["establishment_code"] == "1076801732"
-        historical = [row for row in context["related_contracts"]
-            if row["historical"] and "atlas" in row["merchant"].casefold()]
-        assert historical
+        assert stage == "RCA" and focal["establishment_code"] in UNBOUND_ECS
         return Investigation(
-            diagnosis="Atlas tem somente evidência histórica de identidade, sem contrato atual.",
-            hypotheses=["Contrato vigente ainda não documentado no pacote."],
-            evidence_ids=[row["source_id"] for row in historical], proposals=[],
-            missing_information="Comercial deve confirmar taxas e vigência atuais da Atlas.",
+            diagnosis=f"EC {focal['establishment_code']} sem linha contratual atual com o mesmo EC.",
+            hypotheses=["Vínculo por nome não comprovado nas fontes."],
+            evidence_ids=[focal["source_id"], *(row["source_id"] for row in context["related_contracts"])],
+            proposals=[], missing_information=f"Comercial deve confirmar contrato do EC {focal['establishment_code']}.",
+        )
+
+
+class _EvidenceInterpreter(_ReferenceInterpreter):
+    """Na RCA, propõe o EC investigado apenas para uma única linha atual sem EC cujo nome
+    corresponde ao nome Orbe presente no próprio contexto (inferência, não confirmação)."""
+
+    model = "interpretador-fake-evidencia"
+
+    def invoke(self, context: dict, stage: str) -> ContractProposal | Investigation:
+        if stage != "RCA":
+            return super().invoke(context, stage)
+        _assert_scoped(context)
+        self.calls.append((stage, context))
+        focal, ec = context["focal"], context["focal"]["establishment_code"]
+        groups = {group["establishment_code"]: group for group in context["orbe_groups"]}
+        assert ec in groups
+        candidates = [row for row in context["related_contracts"]
+            if not row["historical"] and row["establishment_code"] is None
+            and max(similarity(row["merchant"], name) for name in groups[ec]["names"]) >= 90]
+        if len(candidates) != 1:
+            return Investigation(
+                diagnosis=f"Nenhuma linha atual sem EC corresponde ao nome Orbe do EC {ec}.",
+                hypotheses=[], evidence_ids=[focal["source_id"]], proposals=[],
+                missing_information=f"Comercial deve confirmar contrato do EC {ec}.",
+            )
+        sample = groups[ec]["samples"][0]["source"]
+        evidence = (focal["source_id"], f"{sample['file']}!{sample['ref']}!row{sample['row']}")
+        proposal = _proposal_for_row(candidates[0], ec=ec, evidence=evidence)
+        return Investigation(
+            diagnosis=f"Nome Orbe do EC {ec} corresponde a linha atual sem EC; vínculo inferido.",
+            hypotheses=["Inferência por nome; validar com o Comercial."],
+            evidence_ids=list(proposal.evidence_ids), proposals=[proposal], missing_information="",
         )
 
 
@@ -463,10 +533,95 @@ def _check_proposal_validation() -> None:
     missing = {**row, "validity": None, "note": None}
     assert _proposal_for_row(missing).disposition == "PENDENTE"
 
+    horizonte = next(row for row in current if row["source_id"].endswith("!A8:L8"))
+    assert horizonte["establishment_code"] is None
+    horizonte_context = context_for(horizonte, rows, dataset, 75, 2, 8)
+    assert [group["establishment_code"] for group in horizonte_context["orbe_groups"]] == ["1043396662"]
+    assert horizonte_context["source_scope"] == SOURCE_SCOPE
+    assert horizonte_context["selection"]["orbe_has_cnpj_column"] is False
+    validate_proposal(_proposal_for_row(horizonte), horizonte_context, rows)
+    _reject_proposal(_proposal_for_row(horizonte, ec="1043300981"), horizonte_context, rows,
+        "EC inferido não foi encontrado")
+    _reject_proposal(_proposal_for_row(horizonte, ec="1075624862"), horizonte_context, rows,
+        "EC inferido não foi encontrado")
+
+
+def _expect_error(error_type: type[Exception], message: str, action) -> None:
+    try:
+        action()
+    except error_type as error:
+        assert message in str(error), str(error)
+    else:
+        raise AssertionError(f"Esperado {error_type.__name__}: {message}")
+
+
+def _check_source_scope() -> None:
+    assert DATA_ROOT == DATA_DIR and require_data_dir(DATA_DIR) == DATA_DIR.resolve()
+    assert require_data_dir(ROOT / "docs" / ".." / "dados_tarvo") == DATA_DIR.resolve()
+    rejected = "Fonte de dados não permitida"
+    for invalid in (ROOT / "docs", ROOT, ROOT / "backend", DATA_DIR / "inexistente"):
+        _expect_error(DataPackError, rejected, lambda path=invalid: load_dataset(path))
+        _expect_error(DataPackError, rejected, lambda path=invalid: require_data_dir(path))
+    dataset = load_dataset(DATA_DIR)
+    with TemporaryDirectory() as directory:
+        copy = Path(directory) / "dados_tarvo"
+        shutil.copytree(DATA_DIR, copy)
+        assert input_manifest(DATA_DIR) == {f"dados/{path.name}": ANY for path in copy.iterdir()}
+        for action in (
+            lambda: load_dataset(copy), lambda: contract_rows(copy, dataset),
+            lambda: document_chunks(copy), lambda: input_manifest(copy),
+        ):
+            _expect_error(DataPackError, rejected, action)
+        for source in (copy / "01_orbe_relatorio_comissoes_set2026.csv", ROOT / "docs" / "00_LEIA-ME.md",
+                ROOT / "backend" / "pyproject.toml"):
+            _expect_error(DataPackError, "fora do pacote", lambda path=source: require_source_file(path))
+        assert require_source_file(DATA_DIR / "04_plano_de_contas_fenix_erp.csv").name == "04_plano_de_contas_fenix_erp.csv"
+        _expect_error(DataPackError, "fora do pacote", lambda: require_source_file(DATA_DIR / "inexistente.csv"))
+        link = Path(directory) / "link"
+        try:
+            link.symlink_to(DATA_DIR, target_is_directory=True)
+        except OSError:
+            pass
+        else:
+            _expect_error(DataPackError, rejected, lambda: load_dataset(link))
+
+        class _NeverCalled:
+            model = "nao-pode-ser-chamado"
+
+            def invoke(self, context, stage):
+                raise AssertionError("Interpretador chamado com fonte fora do escopo.")
+
+        output = Path(directory) / "saida"
+        _expect_error(DataPackError, rejected,
+            lambda: normalize_reference(dataset, copy, output, _NeverCalled()))
+        assert not (output / "referencias.json").exists()
+        log = (output / "fluxo.log").read_text(encoding="utf-8")
+        assert '"EXECUCAO_FALHOU"' in log and '"DataPackError"' in log
+
+    chunks = document_chunks(DATA_DIR)
+    assert {chunk["file"] for chunk in chunks} == SOURCE_FILES
+    assert not any(chunk["file"].endswith(".xlsx") or chunk["file"].endswith(".md") for chunk in chunks)
+    email = "03_email_ponte_cambio_relatorio_set2026.eml"
+    attachment = [chunk for chunk in chunks if chunk["source_id"].startswith(f"{email}!PonteCambio_Relatorio_TARVO_092026.xlsx!")]
+    body = [chunk for chunk in chunks if chunk["source_id"].startswith(f"{email}:MIME:text/plain:")]
+    assert attachment and body
+    assert any("PC-0926-0162" in chunk["text"] for chunk in attachment)
+    assert any("participação de 50%" in chunk["text"] for chunk in body)
+    assert all(re.fullmatch(r".+:L\d+(-L\d+)?", chunk["source_id"]) for chunk in chunks)
+    assert len({chunk["source_id"] for chunk in chunks}) == len(chunks)
+
+
+def _run_cli(argv: list[str]) -> tuple[int, str]:
+    with patch("sys.argv", ["normalizar", *argv]), patch("sys.stderr", StringIO()) as stderr:
+        try:
+            normalize_main()
+        except SystemExit as error:
+            return error.code, stderr.getvalue()
+    raise AssertionError("CLI deveria ter falhado.")
+
 
 def _check_reference_pipeline() -> None:
-    root = Path(__file__).resolve().parents[2]
-    data_dir, docs_dir = root / "dados_tarvo", root / "docs"
+    data_dir = DATA_DIR
     dataset = load_dataset(data_dir)
     rows = contract_rows(data_dir, dataset)
     originals = {contract_id(contract): contract for contract in dataset.contracts}
@@ -477,25 +632,32 @@ def _check_reference_pipeline() -> None:
     ):
         output = Path(directory) / "referencia"
         assert data_dir.resolve() not in output.resolve().parents
-        report = normalize_reference(dataset, data_dir, docs_dir, output, fake, samples=2)
-        assert report["version"] == 1 and report["model"] == fake.model
+        report = normalize_reference(dataset, data_dir, output, fake, samples=2)
+        assert report["version"] == 2 and report["source_scope"] == SOURCE_SCOPE and report["model"] == fake.model
         assert report["settings"] == {"samples": 2, "threshold": 75, "candidate_limit": 8}
+        assert set(report["input_hashes"]) == {f"dados/{path.name}" for path in data_dir.iterdir() if path.is_file()}
         normalizations = {item["source_id"]: item for item in report["normalization"]}
         assert set(normalizations) == set(originals)
         assert all(item["validation_error"] is None for item in normalizations.values())
-        assert Counter(stage for stage, _ in fake.calls) == {"NORMALIZACAO": len(current), "RCA": 2}
-        assert Counter(context["focal"]["establishment_code"] for stage, context in fake.calls if stage == "RCA") == {
-            "1043396662": 1, "1076801732": 1,
-        }
+        assert Counter(stage for stage, _ in fake.calls) == {"NORMALIZACAO": len(current), "RCA": 4}
+        rca_calls = [context for stage, context in fake.calls if stage == "RCA"]
+        assert [context["focal"]["establishment_code"] for context in rca_calls] == sorted(UNBOUND_ECS)
         for stage, context in fake.calls:
+            assert context["source_scope"] == SOURCE_SCOPE
             assert all(len(group["samples"]) <= 2 for group in context["orbe_groups"])
             if stage == "NORMALIZACAO":
                 assert context["selection"]["samples_per_ec"] == 2
+        for context in rca_calls:
+            assert context["focal"]["cnpj"] == "" and context["documents"]
+            assert all(context["focal"]["establishment_code"] in re.sub(r"\D", "", doc["text"])
+                for doc in context["documents"])
 
         horizonte = next(row for row in current if row["merchant"] == "Horizonte Viagens")
         horizonte_id = horizonte["source_id"]
-        assert normalizations[horizonte_id]["proposal"]["disposition"] == "PENDENTE"
-        assert report["decisions"][horizonte_id]["proposal"]["disposition"] == "UTILIZAVEL"
+        assert normalizations[horizonte_id]["proposal"]["disposition"] == "UTILIZAVEL"
+        assert report["decisions"][horizonte_id]["proposal"]["establishment_code"] is None
+        assert all(decision["proposal"]["establishment_code"] == originals[source_id].establishment_code
+            for source_id, decision in report["decisions"].items())
         inactive_ids = {row["source_id"] for row in current if "INATIVO" in (row["note"] or "").upper()}
         assert set(report["unusable_contracts"]) == inactive_ids
         assert all(normalizations[source_id]["proposal"]["disposition"] == "INATIVO" for source_id in inactive_ids)
@@ -518,49 +680,53 @@ def _check_reference_pipeline() -> None:
             for source_id, item in normalizations.items()
         }
         initial, _ = materialize(dataset, initial_decisions, rows)
-        initial_join = join_checkout(initial)
-        assert {row["status"] for row in initial_join if row["ec"] == "1043396662"} == {"PENDENTE"}
+        assert initial == restored
         joined = join_checkout(restored)
         assert len(joined) == len(dataset.checkout)
-        assert {row["status"] for row in joined if row["ec"] == "1043396662"} == {"OK"}
-        atlas = [row for row in joined if row["ec"] == "1076801732"]
-        assert atlas and all(row["status"] == "PENDENTE" and row["contrato"] is None
+        atlas = [row for row in joined if row["ec"] in UNBOUND_ECS]
+        assert Counter(row["ec"] for row in atlas) == {
+            "1038867654": 85, "1043396662": 75, "1043300981": 73, "1076801732": 57,
+        }
+        assert all(row["status"] == "PENDENTE" and row["contrato"] is None and row["cnpj"] is None
             and row["taxa_contratada_fracao"] is None for row in atlas)
-        assert {row["ec"] for row in joined if row["status"] != "OK"} == {"1076801732"}
+        assert {row["erro"] for row in atlas} == {"Encontrados 0 contratos aplicáveis; esperado um."}
+        assert {row["ec"] for row in joined if row["status"] != "OK"} == UNBOUND_ECS
         assert report["summary"] == {
             "contract_rows": len(current), "canonical_rows": len(canonical),
             "checkout_rows": len(joined), "joined": len(joined) - len(atlas),
-            "unresolved_rows": len(atlas), "rca_cases": 2, "human_cases": 1,
+            "unresolved_rows": len(atlas), "rca_cases": 4, "human_cases": 4,
         }
+        assert report["summary"]["joined"] == 1653 and report["summary"]["unresolved_rows"] == 290
 
         assert {path.name for path in output.iterdir()} == {
             "referencias.json", "rca.json", "escaladas_humanas.json",
-            "contratos_normalizados.csv", "join_checkout.csv",
+            "contratos_normalizados.csv", "join_checkout.csv", "fluxo.log",
         }
         persisted = json.loads((output / "referencias.json").read_text(encoding="utf-8"))
         assert persisted == json.loads(json_text(report))
         for decision in persisted["decisions"].values():
             ContractProposal.model_validate(decision["proposal"])
         investigations = json.loads((output / "rca.json").read_text(encoding="utf-8"))
-        assert {item["ec"] for item in investigations} == {"1043396662", "1076801732"}
+        assert [item["ec"] for item in investigations] == sorted(UNBOUND_ECS)
         for item in investigations:
             Investigation.model_validate(item["result"])
-            assert item["rejected"] == []
-        resolved = next(item for item in investigations if item["ec"] == "1043396662")
-        assert resolved["resolved"] and resolved["applied_source_ids"] == [horizonte_id]
-        assert {proposal["source_id"] for proposal in resolved["result"]["proposals"]} == {horizonte_id}
-        assert not next(row for row in resolved["context"]["related_contracts"]
-            if row["source_id"] == horizonte_id)["historical"]
-        residual = next(item for item in investigations if item["ec"] == "1076801732")
-        assert not residual["resolved"] and residual["applied_source_ids"] == []
-        assert residual["result"]["proposals"] == []
+            assert item["rejected"] == [] and item["applied_source_ids"] == []
+            assert not item["resolved"] and item["result"]["proposals"] == []
+            assert item["context"]["source_scope"] == SOURCE_SCOPE
+            assert set(item["context"]["searched_documents"]) == SOURCE_FILES
+        horizonte_case = next(item for item in investigations if item["ec"] == "1043396662")
+        assert horizonte_id in {row["source_id"] for row in horizonte_case["context"]["related_contracts"]}
+        atlas_case = next(item for item in investigations if item["ec"] == "1076801732")
+        assert all(row["historical"] or row["establishment_code"] not in {None, "1076801732"}
+            for row in atlas_case["context"]["related_contracts"] if "atlas" in row["merchant"].casefold())
         escalations = json.loads((output / "escaladas_humanas.json").read_text(encoding="utf-8"))
-        assert len(escalations) == 1
-        escalation = escalations[0]
-        assert escalation["ec"] == "1076801732" and escalation["status"] == "ESCALAR_HUMANO"
-        assert set(escalation["operacoes"]) == {row["ref_origem"] for row in atlas}
-        assert escalation["informacao_faltante"] and escalation["fontes_pesquisadas"]
-        assert escalation["restante_join_processado"] and escalation["impacto_comissao_brl"] is None
+        assert [item["ec"] for item in escalations] == sorted(UNBOUND_ECS)
+        for escalation in escalations:
+            assert escalation["status"] == "ESCALAR_HUMANO" and escalation["quem_decide"] == "Comercial / Financeiro"
+            assert set(escalation["operacoes"]) == {row["ref_origem"] for row in atlas if row["ec"] == escalation["ec"]}
+            assert escalation["informacao_faltante"].endswith(f"EC {escalation['ec']}.")
+            assert set(escalation["fontes_pesquisadas"]) == SOURCE_FILES
+            assert escalation["restante_join_processado"] and escalation["impacto_comissao_brl"] is None
 
         with (output / "contratos_normalizados.csv").open(encoding="utf-8", newline="") as stream:
             reader = csv.DictReader(stream, delimiter=";")
@@ -607,26 +773,122 @@ def _check_reference_pipeline() -> None:
         changed_manifest = {key: value for key, value in report["input_hashes"].items() if key.startswith("dados/")}
         changed_manifest[next(iter(changed_manifest))] = "0" * 64
         with patch("src.application.normalization.input_manifest", return_value=changed_manifest):
-            try:
-                load_reference(dataset, data_dir, output / "referencias.json")
-            except ValueError as error:
-                assert "hashes das fontes divergentes" in str(error)
-            else:
-                raise AssertionError("Replay aceitou fontes alteradas.")
+            _expect_error(ValueError, "hashes das fontes divergentes",
+                lambda: load_reference(dataset, data_dir, output / "referencias.json"))
+
+        # Referências antigas (v1, sem escopo ou com escopo de docs) não podem ser reaproveitadas.
+        legacy_dir = Path(directory) / "legado"
+        legacy_dir.mkdir()
+        without_scope = {key: value for key, value in persisted.items() if key != "source_scope"}
+        for name, legacy in (
+            ("v1.json", {**persisted, "version": 1}),
+            ("sem-escopo.json", without_scope),
+            ("docs.json", {**persisted, "source_scope": "dados_tarvo_e_docs_v1"}),
+            ("v1-sem-escopo.json", {**without_scope, "version": 1}),
+        ):
+            path = legacy_dir / name
+            path.write_text(json_text(legacy), encoding="utf-8")
+            _expect_error(ValueError, "Referência anterior ou fora do escopo",
+                lambda path=path: load_reference(dataset, data_dir, path))
+        some_id = next(iter(persisted["decisions"]))
+        saved_context = persisted["decisions"][some_id]["context"]
+        external_doc = {"source_id": "docs/THREADS_FINANCEIRO_TARVO.md:L1-L12",
+            "file": "THREADS_FINANCEIRO_TARVO.md", "text": "vínculo informado em conversa"}
+        for broken_context, extra_evidence, message in (
+            ({key: value for key, value in saved_context.items() if key != "source_scope"}, None,
+                "Contexto de referência fora do escopo"),
+            ({**saved_context, "source_scope": "dados_tarvo_e_docs_v1"}, None, "Contexto de referência fora do escopo"),
+            ({**saved_context, "related_contracts": []}, None, "não corresponde às evidências atuais"),
+            ({**saved_context, "orbe_groups": saved_context["orbe_groups"][:0]}, None, "não corresponde às evidências atuais"),
+            ({**saved_context, "documents": [external_doc]}, external_doc["source_id"], "cita evidência inexistente"),
+        ):
+            tampered = json.loads(json_text(persisted))
+            tampered["decisions"][some_id]["context"] = broken_context
+            if extra_evidence:
+                tampered["decisions"][some_id]["proposal"]["evidence_ids"].append(extra_evidence)
+            path = legacy_dir / "contexto.json"
+            path.write_text(json_text(tampered), encoding="utf-8")
+            _expect_error(ValueError, message, lambda path=path: load_reference(dataset, data_dir, path))
+        # Chaves extras no contexto salvo são descartadas: o replay reconstrói o contexto a partir das fontes.
+        tampered = json.loads(json_text(persisted))
+        tampered["decisions"][some_id]["context"]["documents"] = [external_doc]
+        path = legacy_dir / "chave-extra.json"
+        path.write_text(json_text(tampered), encoding="utf-8")
+        assert load_reference(dataset, data_dir, path) == restored
+        injected = json.loads(json_text(persisted))
+        # Vínculo sem evidência no contexto (o antigo binding 1043300981→Novo Horizonte aplicado à Horizonte).
+        injected["decisions"][horizonte_id]["proposal"]["establishment_code"] = "1043300981"
+        path = legacy_dir / "vinculo-externo.json"
+        path.write_text(json_text(injected), encoding="utf-8")
+        _expect_error(ValueError, "EC inferido não foi encontrado",
+            lambda: load_reference(dataset, data_dir, path))
+        _expect_error(DataPackError, "Fonte de dados não permitida",
+            lambda: load_reference(dataset, ROOT / "docs", output / "referencias.json"))
 
         cli_output = Path(directory) / "cli"
         cli_fake = _ReferenceInterpreter()
         stdout = StringIO()
         env_file = Path(directory) / "nao-deve-ser-lido.env"
         with patch("src.normalizar.OpenAIInterpreter", return_value=cli_fake) as factory, patch("sys.argv", [
-            "normalizar", "--entrada", str(data_dir), "--docs", str(docs_dir), "--saida", str(cli_output),
+            "normalizar", "--entrada", str(data_dir), "--saida", str(cli_output),
             "--env-file", str(env_file), "--limite-amostras", "2",
         ]), redirect_stdout(stdout):
             normalize_main()
-        factory.assert_called_once_with(env_file, cli_output / "cache_llm")
+        factory.assert_called_once_with(env_file, cli_output / "cache_llm", log=ANY)
         assert json.loads(stdout.getvalue()) == report["summary"]
         assert {path.name for path in cli_output.iterdir()} == {path.name for path in output.iterdir()}
         assert load_reference(dataset, data_dir, cli_output / "referencias.json") == restored
+        with patch("src.normalizar.OpenAIInterpreter", side_effect=AssertionError("não deve instanciar")):
+            code, message = _run_cli(["--entrada", str(data_dir), "--docs", str(ROOT / "docs"),
+                "--saida", str(Path(directory) / "cli-docs")])
+            assert code == 2 and "--docs" in message
+            assert not (Path(directory) / "cli-docs").exists()
+        with patch("src.normalizar.OpenAIInterpreter", return_value=_ReferenceInterpreter()):
+            code, message = _run_cli(["--entrada", str(ROOT / "docs"), "--saida", str(Path(directory) / "cli-fora")])
+            assert code == 2 and "Fonte de dados não permitida" in message
+            assert not (Path(directory) / "cli-fora" / "referencias.json").exists()
+
+        # Fake que só propõe EC quando o nome Orbe do EC investigado está no próprio contexto.
+        evidence_fake = _EvidenceInterpreter()
+        inferred_output = Path(directory) / "inferido"
+        inferred = normalize_reference(dataset, data_dir, inferred_output, evidence_fake, samples=2)
+        investigations = {item["ec"]: item for item in json.loads((inferred_output / "rca.json").read_text(encoding="utf-8"))}
+        expected_links = {
+            "1038867654": "02_tabela_taxas_contratadas.xlsx!Taxas vigentes!A9:L9",
+            "1043300981": "02_tabela_taxas_contratadas.xlsx!Taxas vigentes!A28:L28",
+            "1043396662": horizonte_id,
+        }
+        assert set(investigations) == UNBOUND_ECS
+        for ec, source_id in expected_links.items():
+            assert investigations[ec]["applied_source_ids"] == [source_id] and investigations[ec]["resolved"]
+            assert investigations[ec]["rejected"] == []
+            assert inferred["decisions"][source_id]["proposal"]["establishment_code"] == ec
+            assert inferred["decisions"][source_id]["context"]["focal"]["source_id"] == f"orbe:EC:{ec}"
+        assert not investigations["1076801732"]["resolved"] and investigations["1076801732"]["applied_source_ids"] == []
+        assert inferred["summary"] == {**report["summary"], "joined": 1886, "unresolved_rows": 57, "human_cases": 1}
+        inferred_escalations = json.loads((inferred_output / "escaladas_humanas.json").read_text(encoding="utf-8"))
+        assert [item["ec"] for item in inferred_escalations] == ["1076801732"]
+        with (inferred_output / "contratos_normalizados.csv").open(encoding="utf-8", newline="") as stream:
+            statuses = {row["source_id"]: (row["status"], row["establishment_code"]) for row in csv.DictReader(stream, delimiter=";")}
+        for ec, source_id in expected_links.items():
+            assert statuses[source_id] == ("INFERIDO", ec)
+        inferred_dataset = load_reference(dataset, data_dir, inferred_output / "referencias.json")
+        inferred_close = close_month(inferred_dataset, period)
+        inferred_blocked = Counter(row.tipo for row in inferred_close.pendencias)["CHECKOUT_BLOQUEADO"]
+        assert inferred_blocked == 57
+        new_invoices = {row.tomador_cnpj for row in inferred_close.notas_a_emitir} - {
+            row.tomador_cnpj for row in baseline.notas_a_emitir}
+        assert new_invoices == {"07752116000126", "66564512000199", "78576234000179"}
+        assert "00520815000100" not in {row.tomador_cnpj for row in inferred_close.notas_a_emitir}
+        tampered = json.loads((inferred_output / "referencias.json").read_text(encoding="utf-8"))
+        tampered["decisions"][expected_links["1043396662"]]["context"]["orbe_groups"] = [
+            group for group in tampered["decisions"][expected_links["1043396662"]]["context"]["orbe_groups"]
+            if group["establishment_code"] != "1043396662"
+        ]
+        path = inferred_output / "adulterado.json"
+        path.write_text(json_text(tampered), encoding="utf-8")
+        _expect_error(ValueError, "não corresponde às evidências atuais",
+            lambda: load_reference(dataset, data_dir, path))
 
 
 def check() -> None:
@@ -634,6 +896,7 @@ def check() -> None:
     _check_candidates()
     _check_validity()
     _check_real_contracts()
+    _check_source_scope()
     _check_interpreter()
     _check_proposal_validation()
     _check_reference_pipeline()

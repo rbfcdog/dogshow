@@ -84,13 +84,14 @@ class ClosingPart:
 @dataclass(frozen=True, slots=True)
 class ClosingResult:
     competencia: str
-    status: Literal["CONCLUIDO", "CONCLUIDO_COM_PENDENCIAS"]
+    status: Literal["CONCLUIDO", "CONCLUIDO_COM_PENDENCIAS", "PRELIMINAR_COM_PENDENCIAS"]
     comissoes_por_lojista: tuple[Commission, ...]
     divergencias_taxa: tuple[Divergence, ...]
     notas_a_emitir: tuple[Invoice, ...]
     lancamentos_classificados: tuple[ClassifiedMovement, ...]
     pendencias: tuple[Pending, ...]
     rastro: tuple[Trace, ...]
+    premissas_tecnicas: tuple[str, ...] = ()
 
 
 def trace(identifier: str, source: SourceRef, amount: Decimal, rule: str) -> Trace:

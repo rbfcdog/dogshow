@@ -48,9 +48,9 @@ def check() -> None:
         ("L53", "AURORA", 18, "PIX ENVIADO CONTABILIDADE EXATA LTDA", "-6800", "4.2.06"),
         ("MRD2026090586", "MERIDIANO", 24, "IOF S/ OPERACAO CREDITO", "-48.21", "4.3.01"),
         ("L50", "AURORA", 16, "PIX RECEBIDO 38686002000180 SEM IDENTIFICACAO", "7350", "1.1.09.002"),
-        ("L65", "AURORA", 23, "DEVOLUCAO PIX - MUNDO ABERTO INTERC", "12400", "2.1.01.001"),
-        ("L18", "AURORA", 8, "PIX ENVIADO ROTA GLOBAL INTERCAMBIO LT", "-77106.46", "2.1.01.001"),
-        ("MRD2026090425", "MERIDIANO", 17, "PIX RECEB PONTE AEREA ESTUDANTIL L", "18240", "2.1.02.001"),
+        ("L65", "AURORA", 23, "DEVOLUCAO PIX - MUNDO ABERTO INTERC", "12400", ""),
+        ("L18", "AURORA", 8, "PIX ENVIADO ROTA GLOBAL INTERCAMBIO LT", "-77106.46", ""),
+        ("MRD2026090425", "MERIDIANO", 17, "PIX RECEB PONTE AEREA ESTUDANTIL L", "18240", ""),
         ("MRD2026090094", "MERIDIANO", 1, "TED ENVIADA PONTE CAMBIO SA LIQ OPERACOES", "-240619.49", "2.1.02.001"),
         ("MRD2026090143", "MERIDIANO", 4, "APLICACAO AUTOMATICA CDB DI", "-161736", "1.1.02.001"),
         ("MRD2026090254", "MERIDIANO", 10, "RESGATE AUTOMATICO CDB DI", "162128", "1.1.02.001"),
@@ -72,9 +72,11 @@ def check() -> None:
         )
         for ref, bank, day, description, amount, _ in scenarios
     )
+    # Contas que existiam como contrapartida no modelo anterior continuam no plano: a ausência de
+    # classificação deve vir da falta de evidência, não da falta de conta.
     accounts = tuple(
         Account(SourceRef("contas.csv", code), code, code, "ANALITICA", "D", True)
-        for code in sorted({scenario[-1] for scenario in scenarios} - {""})
+        for code in sorted({scenario[-1] for scenario in scenarios} - {""} | {"2.1.01.001", "4.3.02"})
     )
     dataset = Dataset((), (), (), entries, accounts, {}, {})
     result = classify_banks(dataset, period)
@@ -84,19 +86,45 @@ def check() -> None:
         movement = movements[ref]
         assert movement.conta_codigo == expected_account, (ref, movement.conta_codigo)
         assert movement.valor == Decimal(amount)
-    pending = {item.ref_origem: item for item in result.pending}
-    assert set(pending) == {"L50", "L65", "L92", "MRD-UNKNOWN"}
-    assert pending["L50"].valor_brl == Decimal("7350")
-    assert pending["L65"].valor_brl == Decimal("12400")
-    assert pending["L92"].valor_brl == Decimal("-300000")
-    assert all(item.quem_decide == "Helena" for item in pending.values())
-    assert all(movement.conta_codigo != "4.3.02" for movement in result.movements)
+    exact = {"MRD2026090143", "MRD2026090254", "MRD2026090680", "L12", "MRD2026090107", "L44",
+        "MRD2026090274", "L58", "MRD2026090454", "L92"}
+    unclassified = {"L65", "L18", "MRD2026090425", "MRD-UNKNOWN"}
+    for ref, movement in movements.items():
+        expected = Decimal("1") if ref in exact else Decimal("0") if ref in unclassified else Decimal("0.80")
+        assert movement.confianca == expected, (ref, movement.confianca)
+        assert movement.metodo == "REGRA"
+    by_kind: dict[str, set[str]] = defaultdict(set)
+    for item in result.pending:
+        by_kind[item.tipo].add(item.ref_origem)
+    assumed = set(movements) - exact - unclassified
+    assert dict(by_kind) == {
+        "VALIDAR_RECONHECIMENTO_CONTABIL": assumed,
+        "IDENTIFICAR_PIX": {"L50"},
+        "CLASSIFICACAO_BANCARIA": unclassified,
+        "CONCILIAR_TRANSFERENCIA_PROPRIA": {"L92"},
+    }
+    assert len(result.pending) == len(assumed) + 1 + len(unclassified) + 1
+    assert all(item.quem_decide == "Financeiro" for item in result.pending)
+    pending = {(item.tipo, item.ref_origem): item for item in result.pending}
+    assert pending[("IDENTIFICAR_PIX", "L50")].valor_brl == Decimal("7350")
+    assert pending[("CLASSIFICACAO_BANCARIA", "L65")].valor_brl == Decimal("12400")
+    assert "não comprovad" in pending[("CLASSIFICACAO_BANCARIA", "L65")].motivo
+    assert pending[("CLASSIFICACAO_BANCARIA", "L18")].valor_brl == Decimal("-77106.46")
+    assert "PIX enviado" in pending[("CLASSIFICACAO_BANCARIA", "L18")].motivo
+    assert "finalidade" in pending[("CLASSIFICACAO_BANCARIA", "MRD2026090425")].motivo
+    assert pending[("CONCILIAR_TRANSFERENCIA_PROPRIA", "L92")].valor_brl == Decimal("-300000")
+    assert "provisão" in pending[("VALIDAR_RECONHECIMENTO_CONTABIL", "L15")].motivo
+    assert all(movement.conta_codigo not in {"4.3.02", "2.1.01.001"} for movement in result.movements)
     _assert_traces(result, entries)
     assert classify_banks(dataset, period) == result
     assert classify_banks(dataset, date(2026, 10, 1)) == ClosingPart()
 
     own_out = entries[24]
     own_in = entries[25]
+    assert (own_out.source.ref, own_in.source.ref) == ("L12", "MRD2026090107")
+    paired = classify_banks(replace(dataset, banks=(own_out, own_in)), period)
+    assert paired.pending == () and [m.conta_codigo for m in paired.movements] == ["1.1.09.001"] * 2
+    assert any("Par inequívoco" in item.regra and "MERIDIANO/MRD2026090107" in item.regra for item in paired.traces)
     duplicate_in = replace(own_in, source=SourceRef("meridiano.ofx", "MRD-DUPLICADO"))
     ambiguous = classify_banks(replace(dataset, banks=(own_out, own_in, duplicate_in)), period)
     assert len(ambiguous.pending) == 3
@@ -128,14 +156,21 @@ def check() -> None:
         blocked = classify_banks(replace(dataset, banks=(salary, entries[0]), accounts=invalid_accounts), period)
         assert blocked.movements[0].conta_codigo == "" and blocked.movements[0].confianca == 0
         assert blocked.movements[1].conta_codigo == "1.1.03.001"
-        assert len(blocked.pending) == 1 and blocked.pending[0].tipo == "CONTA_NAO_LANCAVEL"
+        assert [(item.tipo, item.ref_origem) for item in blocked.pending] == [
+            ("CONTA_NAO_LANCAVEL", "L15"), ("VALIDAR_RECONHECIMENTO_CONTABIL", "L9"),
+        ]
         assert blocked.pending[0].valor_brl == salary.amount
         _assert_traces(blocked, (salary, entries[0]))
 
     unsupported_salary = replace(salary, description="PAGTO SALARIOS - FOLHA 09/2026")
     unknown = classify_banks(replace(dataset, banks=(unsupported_salary,)), period)
+    assert unknown.movements[0].conta_codigo == "2.1.04.001" and unknown.movements[0].confianca == Decimal("0.80")
+    assert [item.tipo for item in unknown.pending] == ["VALIDAR_RECONHECIMENTO_CONTABIL"]
+    _assert_traces(unknown, (unsupported_salary,))
+    unsupported_salary = replace(salary, description="FOLHA 09/2026 PAGTO SALARIOS")
+    unknown = classify_banks(replace(dataset, banks=(unsupported_salary,)), period)
     assert unknown.movements[0].conta_codigo == "" and unknown.movements[0].confianca == 0
-    assert len(unknown.pending) == 1
+    assert [item.tipo for item in unknown.pending] == ["CLASSIFICACAO_BANCARIA"]
     _assert_traces(unknown, (unsupported_salary,))
 
     rounded = replace(entries[-1], amount=Decimal("-0.005"))

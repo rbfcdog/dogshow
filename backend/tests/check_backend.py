@@ -1,3 +1,4 @@
+from collections import Counter
 from dataclasses import replace
 from datetime import date
 from decimal import Decimal
@@ -9,7 +10,9 @@ from check_banking import check as check_banking
 from check_checkout import check as check_checkout
 from check_remittances import check as check_remittances
 from check_normalization import check as check_normalization
+from check_flow_log import check as check_flow_log
 
+from src.application.closing import TECHNICAL_ASSUMPTIONS, close_month
 from src.application.diagnostics import diagnose
 from src.domain.models import (
     BankEntry,
@@ -21,6 +24,9 @@ from src.domain.models import (
 )
 from src.main import create_app
 from src.infrastructure.parsing import cnpj, decimal_value, percentage
+from src.infrastructure.readers import load_dataset
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def check_diagnostics() -> None:
@@ -118,10 +124,88 @@ def check_http_boundaries() -> None:
         for invalid in ("2026-13", "2026-00", "0000-09", "2026-9", "../dados_tarvo"):
             response = client.get("/api/v1/diagnostico", params={"competencia": invalid})
             assert response.status_code == 422, (invalid, response.text)
-        response = client.get("/api/v1/diagnostico", params={"competencia": "2026-09"})
-        assert response.status_code == 422
-        assert directory not in response.text
-        assert "message" in response.json()["detail"]
+        for route in ("/api/v1/diagnostico", "/api/v1/fechamento"):
+            response = client.get(route, params={"competencia": "2026-09"})
+            assert response.status_code == 422
+            assert directory not in response.text
+            assert "Fonte de dados não permitida" in response.json()["detail"]["message"]
+    for outside in (ROOT / "docs", ROOT):
+        response = TestClient(create_app(outside)).get("/api/v1/fechamento", params={"competencia": "2026-09"})
+        assert response.status_code == 422 and "dados_tarvo" in response.json()["detail"]["message"]
+    response = TestClient(create_app(ROOT / "dados_tarvo")).get("/api/v1/fechamento", params={"competencia": "2026-09"})
+    assert response.status_code == 200 and response.json()["status"] == "PRELIMINAR_COM_PENDENCIAS"
+    assert response.json()["premissas_tecnicas"]
+
+
+def check_real_closing() -> None:
+    """Fechamento de set/2026 sem referência normalizada: somente dados_tarvo, sem vínculos externos."""
+    dataset = load_dataset(ROOT / "dados_tarvo")
+    result = close_month(dataset, date(2026, 9, 1))
+    assert result.competencia == "2026-09" and result.status == "PRELIMINAR_COM_PENDENCIAS"
+    assert result.premissas_tecnicas == TECHNICAL_ASSUMPTIONS and "dados_tarvo" in result.premissas_tecnicas[0]
+
+    def total(rows, field="valor_brl") -> Decimal:
+        return sum((getattr(row, field) for row in rows), Decimal("0"))
+
+    checkout = [row for row in result.comissoes_por_lojista if row.linha_negocio == "CHECKOUT"]
+    remittance = [row for row in result.comissoes_por_lojista if row.linha_negocio == "REMESSA"]
+    assert (len(checkout), total(checkout, "comissao_brl")) == (18, Decimal("194943.54"))
+    assert (len(remittance), total(remittance, "comissao_brl")) == (14, Decimal("38626.42"))
+    by_line = Counter(row.linha_negocio for row in result.divergencias_taxa)
+    assert by_line == {"CHECKOUT": 92, "REMESSA": 26}
+    assert total([r for r in result.divergencias_taxa if r.linha_negocio == "CHECKOUT"], "diferenca_brl") == Decimal("1576.23")
+    remittance_divergences = [r for r in result.divergencias_taxa if r.linha_negocio == "REMESSA"]
+    assert total(remittance_divergences, "diferenca_brl") == Decimal("205.86")
+    mundo = "17217888000111"
+    assert Counter(row.cnpj for row in remittance_divergences)[mundo] == 23
+    assert all(row.taxa_contratada_pct == Decimal("1.200") for row in remittance_divergences if row.cnpj == mundo)
+
+    pending = Counter(row.tipo for row in result.pendencias)
+    assert pending == {
+        "CHECKOUT_BLOQUEADO": 290, "CLASSIFICACAO_BANCARIA": 109, "DIVERGENCIA_CHECKOUT": 92,
+        "VALIDAR_RECONHECIMENTO_CONTABIL": 61, "CONTRATO_REMESSA_NAO_RESOLVIDO": 53,
+        "VALIDAR_DIVERGENCIA_REMESSA": 26, "VALIDAR_SPREAD_NEGATIVO": 4, "VALIDAR_POLITICA_APURACAO": 2,
+        "CONDICAO_COMERCIAL_NAO_DEFINIDA": 1, "CORRIGIR_RELATORIO_PONTE": 1, "IDENTIFICAR_PIX": 1,
+        "CONCILIAR_TRANSFERENCIA_PROPRIA": 1,
+    }
+    assert not {"CONTESTAR_REMESSA_PONTE", "CONFERIR_REPASSE_FUTURO_PONTE", "SALDO_NEGATIVO_CHECKOUT"} & set(pending)
+    assert not any("Helena" in row.quem_decide for row in result.pendencias)
+    ec_of = {entry.source.ref: entry.establishment_code for entry in dataset.checkout}
+    blocked = [row for row in result.pendencias if row.tipo == "CHECKOUT_BLOQUEADO"]
+    assert Counter(ec_of[row.ref_origem] for row in blocked) == {
+        "1038867654": 85, "1043396662": 75, "1043300981": 73, "1076801732": 57,
+    }
+    assert total(blocked) == Decimal("35368.67") and {row.quem_decide for row in blocked} == {"Comercial"}
+    unbound = {"78576234000179", "07752116000126", "66564512000199"}
+    assert not unbound & {row.cnpj for row in checkout}
+
+    casa = "00520815000100"
+    casa_checkout = next(row for row in checkout if row.cnpj == casa)
+    assert casa_checkout.comissao_brl == Decimal("15391.92")
+    condition = next(row for row in result.pendencias if row.tipo == "CONDICAO_COMERCIAL_NAO_DEFINIDA")
+    assert condition.id_saida == f"condicao-comercial:2026-09:{casa}" and condition.valor_brl is None
+    invoices = result.notas_a_emitir
+    assert len(invoices) == 18 and casa not in {row.tomador_cnpj for row in invoices if row.linha_negocio == "CHECKOUT"}
+    assert total([row for row in invoices if row.linha_negocio == "CHECKOUT"]) == Decimal("194943.54") - casa_checkout.comissao_brl
+    remittance_invoice = [row for row in invoices if row.linha_negocio == "REMESSA"]
+    assert [(row.tomador_cnpj, row.valor_brl) for row in remittance_invoice] == [("75374179000146", Decimal("38626.42"))]
+
+    negatives = {row.ref_origem: row.valor_brl for row in result.pendencias if row.tipo == "VALIDAR_SPREAD_NEGATIVO"}
+    assert negatives == {"PC-0926-0210": Decimal("-687.52"), "PC-0926-0326": Decimal("-509.22"),
+        "PC-0926-0491": Decimal("-292.28"), "PC-0926-0545": Decimal("-345.03")}
+    negative_traces = {row.ref_origem: row.valor for row in result.rastro
+        if row.id_saida.startswith("REMESSA_COMISSAO") and row.ref_origem in negatives}
+    assert negative_traces == {"PC-0926-0210": Decimal("-343.76"), "PC-0926-0326": Decimal("-254.61"),
+        "PC-0926-0491": Decimal("-146.14"), "PC-0926-0545": Decimal("-172.52")}
+    duplicate = next(row for row in result.pendencias if row.tipo == "CORRIGIR_RELATORIO_PONTE")
+    assert (duplicate.ref_origem, duplicate.valor_brl) == ("PC-0926-0162", Decimal("821.88"))
+    unclassified = {row.ref_origem for row in result.pendencias if row.tipo == "CLASSIFICACAO_BANCARIA"}
+    assert {"L18", "L65", "MRD2026090425"} <= unclassified
+    assert len(result.lancamentos_classificados) == 184
+    assert Counter(row.conta_codigo for row in result.lancamentos_classificados)[""] == 109
+    assert {row.quem_decide for row in result.pendencias if row.tipo in {
+        "CLASSIFICACAO_BANCARIA", "VALIDAR_RECONHECIMENTO_CONTABIL", "IDENTIFICAR_PIX",
+        "CONCILIAR_TRANSFERENCIA_PROPRIA", "VALIDAR_POLITICA_APURACAO"}} == {"Financeiro"}
 
 
 def check_financial_input() -> None:
@@ -143,7 +227,9 @@ if __name__ == "__main__":
     check_diagnostics()
     check_http_boundaries()
     check_financial_input()
+    check_real_closing()
     check_checkout()
     check_remittances()
     check_banking()
     check_normalization()
+    check_flow_log()

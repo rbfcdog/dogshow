@@ -48,6 +48,7 @@ class Contract:
     validity_start: date | None = None
     validity_end: date | None = None
     structured_validity: bool = False
+    comments: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +92,14 @@ class Account:
 
 
 @dataclass(frozen=True, slots=True)
+class PartnerTerms:
+    source: SourceRef
+    participation: Decimal | None
+    cnpj: str | None
+    name: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class Dataset:
     checkout: tuple[CheckoutEntry, ...]
     contracts: tuple[Contract, ...]
@@ -99,3 +108,4 @@ class Dataset:
     accounts: tuple[Account, ...]
     bank_opening_balances: dict[str, Decimal]
     bank_closing_balances: dict[str, Decimal]
+    partner_terms: PartnerTerms | None = None

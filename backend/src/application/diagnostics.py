@@ -12,7 +12,6 @@ from src.domain.models import (
     RemittanceEntry,
     SourceRef,
 )
-from src.domain.policies import ESTABLISHMENT_BINDINGS
 
 ZERO = Decimal("0")
 CENT = Decimal("0.01")
@@ -93,11 +92,6 @@ def _checkout_summary(
         for contract in dataset.contracts
         if contract.establishment_code and "INATIVO" not in (contract.note or "").upper()
     }
-    active_cnpjs = {
-        contract.cnpj for contract in dataset.contracts
-        if "INATIVO" not in (contract.note or "").upper()
-    }
-    contracts.update(code for code, cnpj in ESTABLISHMENT_BINDINGS.items() if cnpj in active_cnpjs)
     groups: dict[str, list[CheckoutEntry]] = defaultdict(list)
     by_id: dict[str, list[CheckoutEntry]] = defaultdict(list)
     all_ids = {entry.source.ref for entry in dataset.checkout}
@@ -190,14 +184,14 @@ def _remittance_summary(
     if negative:
         findings.append(Finding(
             "NEGATIVE_SPREAD", "WARNING",
-            "Spread negativo excluído da comissão e da nota pela regra confirmada; contestar com a Ponte.",
+            "Spread negativo reportado; o pacote não define seu tratamento na comissão e na nota.",
             tuple(entry.source for entry in negative),
             sum((entry.spread for entry in negative), ZERO),
         ))
     if outside:
         findings.append(Finding(
             "SETTLEMENT_OUTSIDE_PERIOD", "INFO",
-            "Liquidação em outro mês; a competência confirmada segue a data de contratação.",
+            "Liquidação em outro mês; agrupamento por data de contratação é premissa técnica.",
             tuple(entry.source for entry in outside),
         ))
     if unsettled:
@@ -256,7 +250,7 @@ def _bank_summaries(
             if match and (int(match[2]), int(match[1])) != (period.year, period.month):
                 findings.append(Finding(
                     "COMMISSION_OTHER_PERIOD", "INFO",
-                    "Comissão de outra competência; o repasse de agosto já provisionado baixa o recebível.",
+                    "Comissão de outra competência; provisão anterior não comprovada no pacote.",
                     (entry.source,), entry.amount,
                 ))
     for group in own_transfers.values():

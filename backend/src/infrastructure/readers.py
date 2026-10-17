@@ -23,6 +23,7 @@ from src.domain.models import (
     Contract,
     DataPackError,
     Dataset,
+    PartnerTerms,
     RemittanceEntry,
     SourceRef,
 )
@@ -38,6 +39,7 @@ from src.infrastructure.parsing import (
     percentage,
     text,
 )
+from src.infrastructure.source_scope import require_data_dir, require_source_file
 
 _ROLES = {
     "checkout": "01_orbe_relatorio_comissoes_*.csv",
@@ -67,6 +69,7 @@ _AURORA_HEADER = ("Data", "Lançamento", "Documento", "Valor (R$)", "Saldo (R$)"
 
 
 def _select_files(data_dir: Path) -> dict[str, Path]:
+    require_data_dir(data_dir)
     try:
         files = [path for path in data_dir.iterdir() if path.is_file()]
     except OSError:
@@ -78,11 +81,12 @@ def _select_files(data_dir: Path) -> dict[str, Path]:
             raise DataPackError(
                 f"Papel {role}: esperado exatamente um arquivo {pattern}; encontrados {len(matches)}."
             )
-        selected[role] = matches[0]
+        selected[role] = require_source_file(matches[0])
     return selected
 
 
 def _bytes(path: Path) -> bytes:
+    require_source_file(path)
     try:
         return path.read_bytes()
     except OSError:
@@ -119,7 +123,7 @@ def _header(row: tuple | list, expected: tuple[str, ...], source: SourceRef) -> 
 def _workbook(payload: bytes, source: SourceRef) -> Iterator[Workbook]:
     with BytesIO(payload) as stream:
         try:
-            workbook = load_workbook(stream, read_only=True, data_only=True, keep_links=False)
+            workbook = load_workbook(stream, read_only=False, data_only=True, keep_links=False)
         except (BadZipFile, InvalidFileException, ParseError, EOFError, KeyError, ValueError, TypeError) as exc:
             raise DataPackError("Planilha XLSX inválida ou ilegível.", source) from exc
         try:
@@ -204,6 +208,7 @@ def _contracts(path: Path) -> tuple[Contract, ...]:
                 remittance_rate=None if default_remittance else percentage(remittance, source, "Spread remessa"),
                 validity=optional_text(row[10], source, "Vigência"),
                 note=optional_text(row[11], source, "Obs"),
+                comments="; ".join(cell.comment.text for cell in workbook[sheet][number] if cell.comment) or None,
             ))
     return tuple(contracts)
 
@@ -390,6 +395,21 @@ def _meridiano(path: Path) -> tuple[tuple[BankEntry, ...], dict[str, Decimal]]:
     return tuple(entries), {"MERIDIANO": closing}
 
 
+def _partner_terms(path: Path) -> PartnerTerms:
+    message = BytesParser(policy=policy.default).parsebytes(_bytes(path))
+    body = message.get_body(preferencelist=("plain",))
+    content = body.get_content() if body else ""
+    participation = re.findall(r"participa[çc][ãa]o de\s+(\d+(?:[.,]\d+)?)%", content, re.IGNORECASE)
+    signature = re.findall(r"([^\n]+?)\s*-\s*CNPJ\s+([\d./-]+)", content)
+    name, taxpayer = signature[0] if len(signature) == 1 else (None, None)
+    if name:
+        name = name.rsplit(" - ", 1)[-1].strip()
+    source = SourceRef(path.name, "MIME:text/plain")
+    return PartnerTerms(source,
+        Decimal(participation[0].replace(",", ".")) / 100 if len(participation) == 1 else None,
+        cnpj(taxpayer, source) if taxpayer else None, name)
+
+
 def load_dataset(data_dir: Path) -> Dataset:
     files = _select_files(data_dir)
     checkout = _checkout(files["checkout"])
@@ -406,4 +426,5 @@ def load_dataset(data_dir: Path) -> Dataset:
         accounts=accounts,
         bank_opening_balances=opening,
         bank_closing_balances=closing | meridiano_closing,
+        partner_terms=_partner_terms(files["email"]),
     )

@@ -5,16 +5,6 @@ from src.domain.models import Contract, DataPackError
 
 ZERO = Decimal("0.00")
 CENT = Decimal("0.01")
-DEFAULT_REMITTANCE_RATE = Decimal("0.015")
-REMITTANCE_RATE_TOLERANCE = Decimal("0.0001")
-PONTE_CNPJ = "75374179000146"
-PONTE_NAME = "Ponte Câmbio S.A."
-CASA_CNPJ = "00520815000100"
-ESTABLISHMENT_BINDINGS = {
-    "1043300981": "66564512000199",
-    "1043396662": "78576234000179",
-    "1038867654": "07752116000126",
-}
 
 
 def money(value: Decimal) -> Decimal:
@@ -60,11 +50,9 @@ def contract_candidates(
     establishment_code: str | None = None, cnpj: str | None = None,
 ) -> tuple[Contract, ...]:
     if establishment_code is not None:
-        bound_cnpj = ESTABLISHMENT_BINDINGS.get(establishment_code)
         candidates = (
             contract for contract in contracts
             if contract.establishment_code == establishment_code
-            or bound_cnpj is not None and contract.cnpj == bound_cnpj
         )
     elif cnpj is not None:
         candidates = (contract for contract in contracts if contract.cnpj == cnpj)
@@ -73,5 +61,6 @@ def contract_candidates(
     return tuple(contract for contract in candidates if active_on(contract, on_date))
 
 
-def checkout_exempt(contract: Contract, reference_date: date) -> bool:
-    return contract.cnpj == CASA_CNPJ and date(2026, 9, 1) <= reference_date <= date(2026, 12, 31)
+def has_commercial_question(contract: Contract) -> bool:
+    evidence = ((contract.note or "") + " " + (contract.comments or "")).casefold()
+    return any(term in evidence for term in ("comercial", "condição especial", "condicao especial"))

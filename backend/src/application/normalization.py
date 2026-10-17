@@ -10,7 +10,9 @@ from typing import Protocol
 from src.application.checkout import _rate_key, _reference
 from src.domain.models import Contract, Dataset
 from src.domain.normalization import ContractProposal, Investigation
-from src.domain.policies import ESTABLISHMENT_BINDINGS, checkout_exempt, contract_candidates
+from src.domain.policies import contract_candidates
+from src.infrastructure.flow_log import FlowLog
+from src.infrastructure.source_scope import SOURCE_SCOPE
 from src.infrastructure.normalization_sources import (
     contract_id, contract_rows, document_chunks, input_manifest, json_text,
     orbe_candidates, related_rows, retrieve_documents,
@@ -36,6 +38,7 @@ def context_for(focal: dict, rows: list[dict], dataset: Dataset, threshold: floa
     candidates = related_rows(focal, rows, threshold, limit)
     candidates = [focal] + [r for r in candidates if r["source_id"] != focal["source_id"]][:limit - 1]
     return {
+        "source_scope": SOURCE_SCOPE,
         "focal": focal, "related_contracts": candidates,
         "orbe_groups": orbe_candidates(focal, dataset, threshold, samples),
         "selection": {"fuzzy_threshold": threshold, "samples_per_ec": samples,
@@ -91,9 +94,6 @@ def validate_proposal(proposal: ContractProposal, context: dict, rows: list[dict
     ec = proposal.establishment_code
     if row["establishment_code"] and ec != row["establishment_code"]:
         raise ValueError("A proposta altera um EC explicitamente preenchido na fonte.")
-    confirmed = [key for key, cnpj in ESTABLISHMENT_BINDINGS.items() if cnpj == row["cnpj"]]
-    if confirmed and ec not in confirmed:
-        raise ValueError("A proposta contradiz vínculo confirmado pelo financeiro.")
     if ec and not row["establishment_code"]:
         groups = {g["establishment_code"] for g in context["orbe_groups"]}
         if ec not in groups:
@@ -121,8 +121,7 @@ def materialize(dataset: Dataset, decisions: dict[str, dict], rows: list[dict]) 
         signature = json_text({"cnpj": contract.cnpj, "ec": contract.establishment_code,
             "rates": contract.rates, "remittance_rate": contract.remittance_rate,
             "start": contract.validity_start, "end": contract.validity_end})
-        status = "DOCUMENTADO" if raw.establishment_code or ESTABLISHMENT_BINDINGS.get(
-            contract.establishment_code or "") == contract.cnpj else "INFERIDO" if contract.establishment_code else "DOCUMENTADO"
+        status = "INFERIDO" if contract.establishment_code and not raw.establishment_code else "DOCUMENTADO"
         if signature in merged:
             canonical = merged[signature][1]
             canonical["source_ids"].append(source_id)
@@ -159,10 +158,10 @@ def join_checkout(dataset: Dataset) -> list[dict]:
             if len(candidates) != 1:
                 raise ValueError(f"Encontrados {len(candidates)} contratos aplicáveis; esperado um.")
             contract = candidates[0]
-            if not checkout_exempt(contract, on_date) and key not in contract.rates:
+            if key not in contract.rates:
                 raise ValueError(f"Contrato sem taxa para {key}.")
             row.update(cnpj=contract.cnpj, contrato=contract_id(contract), status="OK",
-                taxa_contratada_fracao="0" if checkout_exempt(contract, on_date) else str(contract.rates[key]))
+                taxa_contratada_fracao=str(contract.rates[key]))
         except ValueError as error:
             row["erro"] = str(error)
         joined.append(row)
@@ -183,19 +182,42 @@ def write_json(path: Path, content: object) -> None:
     temporary.replace(path)
 
 
-def normalize_reference(dataset: Dataset, data_dir: Path, docs_dir: Path, output_dir: Path,
-    interpreter: Interpreter, *, samples: int = 5, threshold: float = 75, candidate_limit: int = 8) -> dict:
-    if samples < 1 or candidate_limit < 1 or not 0 <= threshold <= 100:
-        raise ValueError("Limites de candidatos/amostras devem ser positivos e score entre 0 e 100.")
+def validate_output_dir(data_dir: Path, output_dir: Path) -> None:
     if output_dir.resolve() == data_dir.resolve() or data_dir.resolve() in output_dir.resolve().parents:
         raise ValueError("Artefatos devem ficar fora do diretório de originais.")
+
+
+def normalize_reference(dataset: Dataset, data_dir: Path, output_dir: Path,
+    interpreter: Interpreter, *, samples: int = 5, threshold: float = 75, candidate_limit: int = 8,
+    log: FlowLog | None = None) -> dict:
+    validate_output_dir(data_dir, output_dir)
+    if log is None:
+        with FlowLog(output_dir) as run_log:
+            return _normalize_reference(dataset, data_dir, output_dir, interpreter,
+                samples=samples, threshold=threshold, candidate_limit=candidate_limit, log=run_log)
+    return _normalize_reference(dataset, data_dir, output_dir, interpreter,
+        samples=samples, threshold=threshold, candidate_limit=candidate_limit, log=log)
+
+
+def _normalize_reference(dataset: Dataset, data_dir: Path, output_dir: Path,
+    interpreter: Interpreter, *, samples: int, threshold: float, candidate_limit: int, log: FlowLog) -> dict:
+    if samples < 1 or candidate_limit < 1 or not 0 <= threshold <= 100:
+        raise ValueError("Limites de candidatos/amostras devem ser positivos e score entre 0 e 100.")
     output_dir.mkdir(parents=True, exist_ok=True)
+    log.event("INGESTAO", "EXTRACAO_CONTRATUAL_INICIADA")
     rows = contract_rows(data_dir, dataset)
-    chunks = document_chunks(docs_dir)
+    chunks = document_chunks(data_dir)
+    log.event("INGESTAO", "EXTRACAO_CONTRATUAL_CONCLUIDA", current_rows=sum(not r["historical"] for r in rows),
+        historical_rows=sum(r["historical"] for r in rows), document_chunks=len(chunks))
     decisions: dict[str, dict] = {}
     normalizations = []
+    log.event("NORMALIZACAO", "NORMALIZACAO_INICIADA", model=interpreter.model)
     for focal in (r for r in rows if not r["historical"]):
         context = context_for(focal, rows, dataset, threshold, samples, candidate_limit)
+        log.event("NORMALIZACAO", "CONTEXTO_SELECIONADO", source_id=focal["source_id"],
+            related_contracts=len(context["related_contracts"]),
+            candidate_ecs=[g["establishment_code"] for g in context["orbe_groups"]],
+            sample_rows=sum(len(g["samples"]) for g in context["orbe_groups"]))
         proposal = interpreter.invoke(context, "NORMALIZACAO")
         if not isinstance(proposal, ContractProposal):
             raise ValueError("Saída do interpretador não corresponde ao schema de normalização.")
@@ -208,8 +230,16 @@ def normalize_reference(dataset: Dataset, data_dir: Path, docs_dir: Path, output
         except ValueError as failure:
             error = str(failure)
         normalizations.append({"source_id": focal["source_id"], "proposal": proposal.model_dump(), "validation_error": error})
+        log.event("NORMALIZACAO", "PROPOSTA_REJEITADA" if error else "PROPOSTA_VALIDADA",
+            level="WARNING" if error else "INFO", source_id=focal["source_id"],
+            disposition=proposal.disposition, ec=proposal.establishment_code,
+            reason=proposal.reason, validation_error=error, evidence_ids=proposal.evidence_ids)
     normalized, canonical = materialize(dataset, decisions, rows)
+    log.event("NORMALIZACAO", "NORMALIZACAO_CONCLUIDA", canonical_rows=len(canonical))
+    log.event("JOIN", "JOIN_INICIADO", checkout_rows=len(dataset.checkout))
     joined = join_checkout(normalized)
+    log.event("JOIN", "JOIN_CONCLUIDO", joined=sum(r["status"] == "OK" for r in joined),
+        unresolved_by_ec={ec: len(problems) for ec, problems in unresolved_groups(joined).items()})
     investigations = []
     attempted: set[str] = set()
     while True:
@@ -220,18 +250,24 @@ def normalize_reference(dataset: Dataset, data_dir: Path, docs_dir: Path, output
         attempted.add(ec)
         entries = [e for e in dataset.checkout if e.establishment_code == ec]
         focal = {"source_id": f"orbe:EC:{ec}", "merchant": entries[0].merchant,
-            "cnpj": ESTABLISHMENT_BINDINGS.get(ec, ""), "establishment_code": ec, "historical": False}
+            "cnpj": "", "establishment_code": ec, "historical": False}
         candidates = related_rows(focal, rows, threshold, candidate_limit)
         context = {
+            "source_scope": SOURCE_SCOPE,
             "focal": focal, "failures": problems, "related_contracts": candidates,
             "orbe_groups": orbe_candidates(focal, dataset, threshold, samples),
             "documents": retrieve_documents(chunks, focal, ec),
             "searched_documents": sorted({c["file"] for c in chunks}),
             "normalization_attempts": [n for n in normalizations if n["source_id"] in {r["source_id"] for r in candidates}],
         }
+        log.event("RCA", "INVESTIGACAO_INICIADA", ec=ec, affected_rows=len(problems),
+            contract_candidates=len(candidates), document_ids=[d["source_id"] for d in context["documents"]])
         result = interpreter.invoke(context, "RCA")
         if not isinstance(result, Investigation):
             raise ValueError("Saída do interpretador não corresponde ao schema de investigação.")
+        log.event("RCA", "DIAGNOSTICO_RECEBIDO", ec=ec, diagnosis=result.diagnosis,
+            hypotheses=result.hypotheses, missing_information=result.missing_information,
+            proposed_corrections=len(result.proposals), evidence_ids=result.evidence_ids)
         applied, rejected = [], []
         if len({p.source_id for p in result.proposals}) != len(result.proposals):
             rejected.append("RCA contém propostas repetidas para a mesma linha; nenhuma aplicada.")
@@ -251,14 +287,19 @@ def normalize_reference(dataset: Dataset, data_dir: Path, docs_dir: Path, output
                 except ValueError as failure:
                     rejected.append(str(failure))
         normalized, canonical = materialize(dataset, decisions, rows)
+        log.event("JOIN", "REJOIN_INICIADO", ec=ec, applied_source_ids=applied)
         joined = join_checkout(normalized)
+        log.event("JOIN", "REJOIN_CONCLUIDO", ec=ec,
+            unresolved_rows=len(unresolved_groups(joined).get(ec, [])))
         investigations.append({"ec": ec, "context": context, "result": result.model_dump(),
             "applied_source_ids": applied, "rejected": rejected,
             "resolved": ec not in unresolved_groups(joined)})
+        log.event("RCA", "INVESTIGACAO_CONCLUIDA", ec=ec, applied_source_ids=applied,
+            rejected=rejected, resolved=investigations[-1]["resolved"])
     escalations = []
     for ec, problems in unresolved_groups(joined).items():
         investigation = next(item for item in investigations if item["ec"] == ec)
-        escalations.append({"ec": ec, "status": "ESCALAR_HUMANO", "quem_decide": "Comercial / Diego",
+        escalations.append({"ec": ec, "status": "ESCALAR_HUMANO", "quem_decide": "Comercial / Financeiro",
             "operacoes": [p["ref_origem"] for p in problems], "falhas": problems,
             "diagnostico": investigation["result"]["diagnosis"],
             "hipoteses": investigation["result"]["hypotheses"],
@@ -267,7 +308,10 @@ def normalize_reference(dataset: Dataset, data_dir: Path, docs_dir: Path, output
             "trechos_consultados": investigation["context"]["documents"],
             "tentativas_rejeitadas": investigation["rejected"],
             "impacto_comissao_brl": None, "restante_join_processado": True})
-    report = {"version": 1, "model": interpreter.model, "input_hashes": input_manifest(data_dir, docs_dir),
+        log.event("ESCALADA", "CASO_ESCALADO", level="WARNING", ec=ec,
+            affected_rows=len(problems), responsible=escalations[-1]["quem_decide"],
+            missing_information=escalations[-1]["informacao_faltante"])
+    report = {"version": 2, "source_scope": SOURCE_SCOPE, "model": interpreter.model, "input_hashes": input_manifest(data_dir),
         "settings": {"samples": samples, "threshold": threshold, "candidate_limit": candidate_limit},
         "decisions": decisions, "normalization": normalizations,
         "summary": {"contract_rows": len(normalizations), "canonical_rows": len(canonical),
@@ -276,7 +320,11 @@ def normalize_reference(dataset: Dataset, data_dir: Path, docs_dir: Path, output
             "rca_cases": len(investigations), "human_cases": len(escalations)},
         "unusable_contracts": [source_id for source_id in {contract_id(c) for c in dataset.contracts}
             if source_id not in decisions or decisions[source_id]["proposal"]["disposition"] != "UTILIZAVEL"]}
+    log.event("EXPORTACAO", "EXPORTACAO_INICIADA")
     export_reference(output_dir, report, canonical, joined, investigations, escalations)
+    log.event("EXPORTACAO", "EXPORTACAO_CONCLUIDA", artifacts=["referencias.json", "rca.json",
+        "escaladas_humanas.json", "contratos_normalizados.csv", "join_checkout.csv"])
+    log.event("EXECUCAO", "RESUMO", **report["summary"])
     return report
 
 
@@ -305,11 +353,36 @@ def export_reference(output_dir: Path, report: dict, canonical: list[dict], join
 
 def load_reference(dataset: Dataset, data_dir: Path, reference_file: Path) -> Dataset:
     report = json.loads(reference_file.read_text(encoding="utf-8"))
-    if report.get("version") != 1:
-        raise ValueError("Versão de referência não suportada.")
-    actual = input_manifest(data_dir, Path("/__tarvo_no_docs__"))
-    expected = {k: v for k, v in report["input_hashes"].items() if k.startswith("dados/")}
+    if report.get("version") != 2 or report.get("source_scope") != SOURCE_SCOPE:
+        raise ValueError("Referência anterior ou fora do escopo dados_tarvo; gere uma nova normalização.")
+    actual = input_manifest(data_dir)
+    expected = report["input_hashes"]
     if actual != expected:
         raise ValueError("Referência incompatível com o pacote atual; hashes das fontes divergentes.")
     rows = contract_rows(data_dir, dataset)
-    return materialize(dataset, report["decisions"], rows)[0]
+    chunks = document_chunks(data_dir)
+    settings = report["settings"]
+    originals = {r["source_id"]: r for r in rows if not r["historical"]}
+    safe_decisions = {}
+    for source_id, record in report["decisions"].items():
+        saved = record["context"]
+        if saved.get("source_scope") != SOURCE_SCOPE:
+            raise ValueError("Contexto de referência fora do escopo permitido.")
+        focal_id = saved["focal"]["source_id"]
+        if focal_id in originals:
+            fresh = context_for(originals[focal_id], rows, dataset, settings["threshold"], settings["samples"], settings["candidate_limit"])
+        else:
+            ec = saved["focal"].get("establishment_code")
+            entries = [e for e in dataset.checkout if e.establishment_code == ec]
+            if not entries or focal_id != f"orbe:EC:{ec}":
+                raise ValueError("EC de investigação não existe na fonte.")
+            focal = {"source_id": focal_id, "merchant": entries[0].merchant, "cnpj": "", "establishment_code": ec, "historical": False}
+            fresh = {"source_scope": SOURCE_SCOPE, "focal": focal,
+                "related_contracts": related_rows(focal, rows, settings["threshold"], settings["candidate_limit"]),
+                "orbe_groups": orbe_candidates(focal, dataset, settings["threshold"], settings["samples"]),
+                "documents": retrieve_documents(chunks, focal, ec),
+                "searched_documents": sorted({c["file"] for c in chunks})}
+        if any(json_text(saved.get(key)) != json_text(value) for key, value in fresh.items()):
+            raise ValueError("Contexto de referência não corresponde às evidências atuais de dados_tarvo.")
+        safe_decisions[source_id] = {"proposal": record["proposal"], "context": fresh}
+    return materialize(dataset, safe_decisions, rows)[0]
