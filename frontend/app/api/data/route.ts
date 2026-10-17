@@ -3,17 +3,34 @@ import fs from "fs";
 import path from "path";
 
 function parseCsv(content: string): Record<string, string>[] {
-  const lines = content.trim().split("\n");
-  if (lines.length < 2) return [];
-  const header = lines[0].split(";").map(c => c.trim().replace(/^\ufeff/, ""));
-  return lines.slice(1).map(line => {
-    const cells = line.split(";");
-    const row: Record<string, string> = {};
-    for (let i = 0; i < header.length; i++) {
-      row[header[i]] = (cells[i] ?? "").trim();
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = "";
+  let quoted = false;
+  for (let i = 0; i < content.length; i++) {
+    const char = content[i];
+    if (char === '"') {
+      if (quoted && content[i + 1] === '"') { field += '"'; i++; }
+      else if (quoted || !field) quoted = !quoted;
+      else field += char;
+    } else if (char === ";" && !quoted) {
+      row.push(field);
+      field = "";
+    } else if ((char === "\n" || char === "\r") && !quoted) {
+      if (char === "\r" && content[i + 1] === "\n") i++;
+      row.push(field);
+      if (row.length > 1 || row[0]) rows.push(row);
+      row = [];
+      field = "";
+    } else {
+      field += char;
     }
-    return row;
-  });
+  }
+  if (field || row.length) { row.push(field); rows.push(row); }
+  const [header, ...entries] = rows;
+  if (!header) return [];
+  header[0] = header[0].replace(/^\ufeff/, "");
+  return entries.map(cells => Object.fromEntries(header.map((key, i) => [key, (cells[i] ?? "").trim()])));
 }
 
 function safeRead(filePath: string): string | null {
@@ -45,16 +62,23 @@ export async function GET() {
   const pendencias = parseCsv(safeRead(path.join(saidaDir, "pendencias.csv")) ?? "");
   const rastro = parseCsv(safeRead(path.join(saidaDir, "rastro.csv")) ?? "");
 
-  const referenciasRaw = safeJson(path.join(saidaDir, "referencias", "referencias.json"));
-  let referenciasSummary: unknown = null;
-  if (referenciasRaw && typeof referenciasRaw === "object" && "summary" in referenciasRaw) {
-    referenciasSummary = referenciasRaw.summary;
-  }
-
-  const rca = safeJson(path.join(saidaDir, "referencias", "rca.json")) ?? [];
-  const escaladas = safeJson(path.join(saidaDir, "referencias", "escaladas_humanas.json")) ?? [];
-  const revisaoBancaria = parseCsv(safeRead(path.join(saidaDir, "referencias_bancarias", "revisao_humana.csv")) ?? "");
-  const rcaBancaria = safeJson(path.join(saidaDir, "referencias_bancarias", "rca_bancaria.json")) ?? [];
+  const workDir = path.join(rootDir, ".tarvo-work");
+  const referenciasRaw = safeJson(path.join(workDir, "referencias", "referencias.json"));
+  const reference = referenciasRaw as {
+    summary?: unknown;
+    decisions?: Record<string, { proposal?: { reason?: string; evidence_ids?: string[] } }>;
+  } | null;
+  const referenciasSummary = reference?.summary ?? null;
+  const contractDecisions = Object.fromEntries(Object.entries(reference?.decisions ?? {})
+    .filter(([, record]) => record.proposal?.reason && Array.isArray(record.proposal.evidence_ids))
+    .map(([source, record]) => [
+      source.replace(".xlsx!", ".xlsx/").replace(/!([^!]*)$/, "/$1"),
+      { reason: record.proposal!.reason, evidence_ids: record.proposal!.evidence_ids },
+    ]));
+  const rca = safeJson(path.join(workDir, "referencias", "rca.json")) ?? [];
+  const escaladas = safeJson(path.join(workDir, "referencias", "escaladas_humanas.json")) ?? [];
+  const revisaoBancaria = parseCsv(safeRead(path.join(workDir, "referencias_bancarias_novas", "revisao_humana.csv")) ?? "");
+  const rcaBancaria = safeJson(path.join(workDir, "referencias_bancarias_novas", "rca_bancaria.json")) ?? [];
 
   let totalCheckout = 0;
   let totalRemessa = 0;
@@ -92,9 +116,10 @@ export async function GET() {
     notas,
     lancamentos,
     pendencias,
-    rastro: rastro.slice(0, 500),
+    rastro,
     rastro_total_count: rastro.length,
     referencias_summary: referenciasSummary,
+    contract_decisions: contractDecisions,
     rca,
     escaladas,
     revisao_bancaria: revisaoBancaria,

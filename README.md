@@ -138,7 +138,7 @@ O botão **Executar fechamento com LLM** chama `POST /api/run` no Next.js, que c
 
 1. **Visão Geral & KPIs:** faturamento consolidado de comissões (checkout e remessa), total de notas fiscais, volume de divergências e contador de lançamentos/pendências com indicador de 100% de batimento no rastro.
 2. **Comissões & Notas:** tabelas detalhadas com busca dinâmica por lojista/CNPJ, badges de proveniência (`Contrato Documentado` vs `Vínculo Inferido via RCA`) e botão de atalho para o rastro.
-3. **Linhagem & Rastro (Trace UX):** explicador de rastro em linguagem natural gerado pela IA para cada saída selecionada, árvore visual de proveniência conectando o arquivo/linha de origem à saída financeira, e badges de governança.
+3. **Linhagem & Rastro (Trace UX):** a explicação usa o valor da saída selecionada, as contribuições do `rastro.csv` e, para contratos de checkout vinculados, o motivo e as evidências da decisão LLM em `.tarvo-work/referencias/referencias.json`. Para saídas sem decisão contratual associada, apresenta apenas as fontes e regras registradas; não gera uma nova interpretação por IA.
 4. **Divergências & Minutas Acionáveis:** tabela com as divergências e gerador de minutas de e-mail prontas para envio com 1 clique (notificação para a Orbe das 92 diferenças de checkout e contestação para a Ponte Câmbio dos spreads negativos de trava vencida).
 5. **Governança ERP & Bancos:** visualização dos 3 níveis de governança do ERP, destaque matemático da conciliação câmbio × banco (sobra de R$ 18.240,00 da Ponte Aérea Estudantil) e tabela de lançamentos bancários classificados.
 6. **Casos Humanos & RCA:** dossiês executivos da Atlas Idiomas (57 transações sem contrato 2026) e da Casa do Estudante (isenção verbal sem contrato formal), com botões para gerar pedidos de homologação ao Comercial (Diego).
@@ -277,7 +277,7 @@ O comando termina sem prints quando passa; falhas geram `AssertionError` e códi
 
 Cobre arredondamento, contratos, notas, rastro, conta analítica e HTTP. Também valida a aplicação das propostas como `IA` sem fingir aprovação, pendências operacionais, rejeição de fontes obsoletas e aplicação de decisões humanas apenas quando realmente revisadas.
 
-Em uma execução limpa sem `docs/`, o fechamento gerou as seis saídas e as duas referências locais com OpenAI; propostas bancárias permaneceram não aprovadas. Os totais variam conforme as evidências locais e as respostas do modelo: confira o resumo, `pendencias.csv` e `rastro.csv` de cada execução em vez de assumir quantidades fixas.
+Em clone isolado de `HEAD` com estas alterações locais aplicadas, **sem Markdown em `docs/`**, `uv sync --project backend --locked` e o comando de fechamento acima (chave fornecida por `--env-file` externo) geraram as duas referências com OpenAI e exatamente seis CSVs: 35 comissões, 238 divergências, 21 notas, 184 lançamentos, 475 pendências e 5.172 contribuições do rastro, todas reconciliadas por `id_saida`. A IA sugeriu 109 contas; **Aurora/L65 permaneceu sem `conta_codigo` e com `CLASSIFICACAO_BANCARIA` pendente**, pois faltam origem, motivo e obrigação comprovados para a devolução Pix no pacote publicado. Numa execução local com documentos adicionais houve proposta para L65, ainda não aprovada. Totais e cobertura podem variar com evidências e respostas do modelo: confira o resumo e as pendências da própria execução.
 
 ## Fontes e limites
 

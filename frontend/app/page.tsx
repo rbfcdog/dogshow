@@ -16,6 +16,10 @@ interface Resumo {
   rastro_qtd: number;
   reconciliado_100: boolean;
 }
+interface ContractDecision {
+  reason: string;
+  evidence_ids: string[];
+}
 
 interface DashboardData {
   competencia: string;
@@ -28,6 +32,7 @@ interface DashboardData {
   pendencias: Record<string, string>[];
   rastro: Record<string, string>[];
   rastro_total_count: number;
+  contract_decisions: Record<string, ContractDecision>;
   rca: Record<string, unknown>[];
   escaladas: Record<string, unknown>[];
   revisao_bancaria: Record<string, string>[];
@@ -117,28 +122,24 @@ export default function Dashboard() {
   }, { regra: 0, ia: 0, semConta: 0 });
   const reviewPending = data.pendencias.filter(row => row.tipo === "VALIDAR_CLASSIFICACAO_IA").length;
 
-  // Selected trace explanation logic
   const selectedComissao = data.comissoes.find(c => c.id_saida === selectedTraceId);
   const selectedNota = data.notas.find(n => n.id_saida === selectedTraceId);
   const selectedDivergencia = data.divergencias.find(d => d.id_saida === selectedTraceId);
   const selectedPendencia = data.pendencias.find(p => p.id_saida === selectedTraceId);
   const traceContributions = data.rastro.filter(r => r.id_saida === selectedTraceId);
+  const contractSource = traceContributions[0]?.regra.match(/(?:^|; )contrato ([^;]+)/)?.[1];
+  const contractDecision = contractSource && data.contract_decisions[contractSource];
 
   const getTraceExplanation = () => {
-    if (selectedTraceId.includes("07752116000126")) {
-      return "Kiwi Experience: R$ 11.464,17 apurados em 86 transações (85 de 01_orbe + 1 de 06_orbe). Vinculado no RCA ao contrato A9:L9 (EC 1038867654) com taxa contratada de 3,19% (crédito 2-6x), corroborada por 15 remessas no XLSX anexo da Ponte e débitos no Aurora.";
-    }
-    if (selectedTraceId.includes("66564512000199")) {
-      return "Novo Horizonte Intercâmbio: R$ 7.212,68 apurados em 73 transações. Vinculado no RCA ao contrato A28:L28 (EC 1043300981), desambiguado de Horizonte Viagens pelo CNPJ 66564512000199 no XLSX da Ponte.";
-    }
-    if (selectedTraceId.includes("78576234000179")) {
-      return "Horizonte Viagens: R$ 8.991,57 apurados em 75 transações. Vinculado no RCA ao contrato A8:L8 (EC 1043396662) corroborado pela aba histórica 2025 e extrato Aurora.";
-    }
-    if (selectedTraceId.includes("75374179000146")) {
-      return "Ponte Câmbio S.A.: Nota de intermediação única de R$ 242.367,26 contemplando a participação de 50% do spread realizado nas remessas elegíveis de setembro, conforme termos do e-mail 03.";
-    }
-    if (selectedComissao) {
-      return `Lojista ${selectedComissao.lojista} (CNPJ ${selectedComissao.cnpj}): comissão de ${formatBrl(parseFloat(selectedComissao.comissao_brl))} na linha ${selectedComissao.linha_negocio}. Reconciliada com ${traceContributions.length} contribuições de rastro contra as fontes brutas.`;
+    if (selectedComissao || selectedNota) {
+      const name = selectedComissao?.lojista ?? selectedNota!.tomador;
+      const amount = selectedComissao?.comissao_brl ?? selectedNota!.valor_brl;
+      const kind = selectedComissao ? "Comissão" : "Proposta de nota";
+      const source = traceContributions[0];
+      return `${kind} de ${name}: ${formatBrl(parseFloat(amount))} (${selectedComissao?.linha_negocio ?? selectedNota!.linha_negocio}). ` +
+        `${traceContributions.length} contribuições no rastro.` +
+        (source ? ` Primeira fonte: ${source.arquivo_origem}, ${source.ref_origem}; regra: ${source.regra}` : " Sem rastro disponível para esta saída.") +
+        (contractDecision ? ` Decisão de normalização LLM (${contractSource}): ${contractDecision.reason} Evidências citadas: ${contractDecision.evidence_ids.join(", ")}.` : "");
     }
     if (selectedDivergencia) {
       return `Divergência na transação ${selectedDivergencia.ref_origem}: taxa contratada ${selectedDivergencia.taxa_contratada_pct}% vs aplicada ${selectedDivergencia.taxa_aplicada_pct}%, gerando diferença assinada de ${formatBrl(parseFloat(selectedDivergencia.diferenca_brl))}.`;
@@ -146,7 +147,7 @@ export default function Dashboard() {
     if (selectedPendencia) {
       return `Pendência ${selectedPendencia.tipo} (${selectedPendencia.ref_origem}): ${selectedPendencia.motivo}. Decisor: ${selectedPendencia.quem_decide}.`;
     }
-    return "Selecione uma saída financeira na tabela para inspecionar a explicação em linguagem natural da IA e a linhagem de provas.";
+    return "Selecione uma saída financeira na tabela para inspecionar sua explicação e as fontes registradas.";
   };
 
   return (
@@ -250,7 +251,7 @@ export default function Dashboard() {
           className={`tab-btn ${activeTab === "rastro" ? "active" : ""}`}
           onClick={() => setActiveTab("rastro")}
         >
-          Linhagem & Rastro (Trace UX) <span className="tab-badge">IA Explicador</span>
+          Linhagem & Rastro (Trace UX) <span className="tab-badge">Fontes e decisões</span>
         </button>
         <button
           className={`tab-btn ${activeTab === "divergencias" ? "active" : ""}`}
@@ -361,6 +362,7 @@ export default function Dashboard() {
                     <th>Linha</th>
                     <th className="num">Valor da NF</th>
                     <th>Discriminação</th>
+                    <th>Rastro</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -377,6 +379,14 @@ export default function Dashboard() {
                         {formatBrl(parseFloat(n.valor_brl))}
                       </td>
                       <td style={{ fontSize: 11, color: "var(--muted)" }}>{n.discriminacao}</td>
+                      <td>
+                        <button className="btn btn-sm" onClick={() => {
+                          setSelectedTraceId(n.id_saida);
+                          setActiveTab("rastro");
+                        }}>
+                          Ver Rastro
+                        </button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -398,14 +408,15 @@ export default function Dashboard() {
               <div className="trace-amount">
                 {selectedComissao && formatBrl(parseFloat(selectedComissao.comissao_brl))}
                 {selectedDivergencia && formatBrl(parseFloat(selectedDivergencia.diferenca_brl))}
+                {selectedNota && formatBrl(parseFloat(selectedNota.valor_brl))}
                 {selectedPendencia && selectedPendencia.valor_brl && formatBrl(parseFloat(selectedPendencia.valor_brl))}
               </div>
             </div>
 
-            {/* Explicador de IA em Linguagem Natural */}
+            {/* Explicação baseada na saída, no rastro e na decisão registrada, quando houver */}
             <div className="trace-explain">
               <strong style={{ color: "var(--ink)", display: "block", marginBottom: 4 }}>
-                Explicador da Trilha em Linguagem Natural (LLM Trace Explainer):
+                Explicação da saída e decisão LLM registrada (quando aplicável):
               </strong>
               {getTraceExplanation()}
             </div>
@@ -416,9 +427,9 @@ export default function Dashboard() {
               <span className="lineage-arrow">➔</span>
               <span className="lineage-step">📑 Linha / Evento</span>
               <span className="lineage-arrow">➔</span>
-              <span className="lineage-step">🤖 Evidência / Validação IA</span>
+              <span className="lineage-step">📑 Evidência / Regra</span>
               <span className="lineage-arrow">➔</span>
-              <span className="lineage-step" style={{ color: "var(--success)" }}>💰 Saída Financeira Reconciliada</span>
+              <span className="lineage-step" style={{ color: "var(--success)" }}>💰 Saída preliminar</span>
             </div>
 
             <div style={{ marginTop: 14 }}>
@@ -442,7 +453,7 @@ export default function Dashboard() {
             <div className="panel-header">
               <h3 className="panel-title">Tabela de Amostras do Rastro Oficial (rastro.csv)</h3>
               <span style={{ fontSize: 12, color: "var(--muted)" }}>
-                Exibindo primeiras {data.rastro.length} de {data.rastro_total_count} contribuições
+                Exibindo primeiras {Math.min(data.rastro.length, 25)} de {data.rastro_total_count} contribuições
               </span>
             </div>
             <div className="panel-body">
