@@ -68,7 +68,7 @@ _AURORA_HEADER = ("Data", "Lançamento", "Documento", "Valor (R$)", "Saldo (R$)"
 
 def _select_files(data_dir: Path) -> dict[str, Path]:
     try:
-        files = [path for path in data_dir.iterdir() if path.is_file()]
+        files = [path for path in data_dir.iterdir() if path.is_file() and not path.name.startswith(".")]
     except OSError:
         raise DataPackError("Diretório de dados inexistente ou inacessível.") from None
     selected = {}
@@ -79,6 +79,13 @@ def _select_files(data_dir: Path) -> dict[str, Path]:
                 f"Papel {role}: esperado exatamente um arquivo {pattern}; encontrados {len(matches)}."
             )
         selected[role] = matches[0]
+    adjustments = sorted(path for path in files if fnmatchcase(path.name.lower(), "06_orbe_ajustes_tardios_*.csv"))
+    if len(adjustments) > 1:
+        raise DataPackError(
+            f"Papel ajustes: esperado no máximo um arquivo 06_orbe_ajustes_tardios_*.csv; encontrados {len(adjustments)}."
+        )
+    if adjustments:
+        selected["adjustments"] = adjustments[0]
     return selected
 
 
@@ -393,6 +400,8 @@ def _meridiano(path: Path) -> tuple[tuple[BankEntry, ...], dict[str, Decimal]]:
 def load_dataset(data_dir: Path) -> Dataset:
     files = _select_files(data_dir)
     checkout = _checkout(files["checkout"])
+    if "adjustments" in files:
+        checkout = checkout + _checkout(files["adjustments"])
     contracts = _contracts(files["contracts"])
     remittances = _remittances(files["email"])
     accounts = _accounts(files["accounts"])

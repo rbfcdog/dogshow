@@ -3,6 +3,7 @@ from datetime import date
 from decimal import Decimal
 from unicodedata import combining, normalize
 
+from src.domain.banking_reference import ReviewedBankDecision
 from src.domain.closing import ClassifiedMovement, ClosingPart, Pending, trace
 from src.domain.models import Account, BankEntry, Dataset
 from src.domain.policies import in_period, money, output_id
@@ -72,12 +73,44 @@ def _classify(entry: BankEntry) -> tuple[str, Decimal, str]:
     return "", Decimal("0"), "Descrição sem regra evidenciada: contrapartida não identificada, sem presumir conta ou receita."
 
 
-def classify_banks(dataset: Dataset, period: date) -> ClosingPart:
+def classify_banks(dataset: Dataset, period: date, *,
+    reviewed_decisions: dict[str, ReviewedBankDecision] | None = None) -> ClosingPart:
     entries = tuple(entry for entry in dataset.banks if in_period(entry.occurred_on, period))
     accounts: dict[str, list[Account]] = defaultdict(list)
     for account in dataset.accounts:
         accounts[account.code].append(account)
-    classifications = tuple(_classify(entry) for entry in entries)
+    original_classifications = tuple(_classify(entry) for entry in entries)
+    classifications = list(original_classifications)
+    decisions = reviewed_decisions or {}
+    identifiers = {
+        output_id("movimento", period, entry.bank, entry.source.file, entry.source.ref)
+        for entry in entries
+    }
+    if set(decisions) - identifiers:
+        raise ValueError("Referência bancária contém movimento fora da competência ou do pacote.")
+    methods: dict[str, str] = {}
+    for index, entry in enumerate(entries):
+        identifier = output_id("movimento", period, entry.bank, entry.source.file, entry.source.ref)
+        decision = decisions.get(identifier)
+        if decision is None:
+            continue
+        if (
+            decision.movement_id != identifier or not decision.reviewed_by.strip()
+            or not decision.reference_id or not decision.evidence_ids or not decision.reason.strip()
+        ):
+            raise ValueError("Decisão bancária sem revisão, origem ou justificativa válida.")
+        candidates = accounts.get(decision.account_code, [])
+        if len(candidates) != 1 or candidates[0].kind != "ANALITICA" or not candidates[0].posting_allowed:
+            raise ValueError("Decisão bancária revisada aponta para conta inexistente ou não lançável.")
+        original_code, original_confidence, original_rule = original_classifications[index]
+        if original_code and original_confidence == Decimal("1") and original_code != decision.account_code:
+            raise ValueError("Decisão de IA não pode substituir conta resolvida por regra determinística.")
+        rule = (
+            f"{original_rule} Classificação IA revisada por {decision.reviewed_by}: {decision.reason} "
+            f"Referência {decision.reference_id}; evidências: {', '.join(decision.evidence_ids)}."
+        )
+        classifications[index] = (decision.account_code, Decimal("0.80"), rule)
+        methods[identifier] = "IA"
     transfers: dict[tuple[date, Decimal], list[BankEntry]] = defaultdict(list)
     for entry, (code, _, _) in zip(entries, classifications):
         if code == "1.1.09.001":
@@ -85,7 +118,8 @@ def classify_banks(dataset: Dataset, period: date) -> ClosingPart:
     movements = []
     pending = []
     traces = []
-    for entry, (code, confidence, rule) in zip(entries, classifications):
+    for index, (entry, (code, confidence, rule)) in enumerate(zip(entries, classifications)):
+        baseline_code = original_classifications[index][0]
         proposed_code = code
         amount = money(entry.amount)
         identifier = output_id("movimento", period, entry.bank, entry.source.file, entry.source.ref)
@@ -102,15 +136,27 @@ def classify_banks(dataset: Dataset, period: date) -> ClosingPart:
                 code = ""
                 confidence = Decimal("0")
                 rule = issues[-1][1]
-        if proposed_code == "1.1.09.002":
+        decision = decisions.get(identifier)
+        review_note = (
+            f" Classificação IA revisada por {decision.reviewed_by} (ref {decision.reference_id}; "
+            f"evidências: {', '.join(decision.evidence_ids)})."
+            if decision is not None else ""
+        )
+        if baseline_code == "1.1.09.002":
             issues.append((
                 "IDENTIFICAR_PIX",
-                "Identificar origem e finalidade do PIX recebido; valor é crédito bancário, não receita. Uso da transitória 1.1.09.002 é decisão justificada do time, não resposta literal de Helena.",
+                "Identificar origem e finalidade do PIX recebido; solicitar comprovante ao Banco Aurora e "
+                "confirmação de Helena (CNPJ na descrição não comprova contrato ou baixa). Valor é crédito "
+                "bancário, não receita. Uso da transitória 1.1.09.002 é decisão justificada do time em "
+                f"HIPOTESES.md, não homologação literal de Helena.{review_note}",
             ))
-        if proposed_code == "2.1.01.001" and entry.amount > 0:
+        if baseline_code == "2.1.01.001" and entry.amount > 0:
             issues.append((
                 "MOTIVO_DEVOLUCAO_PIX",
-                "Helena deve apurar o motivo do PIX de repasse Mundo Aberto que voltou; o valor restabelece obrigação com o lojista e não constitui receita.",
+                "Helena deve apurar o código/motivo bancário do PIX de repasse Mundo Aberto que voltou e "
+                "confirmar dados para reenvio; o valor restabelece obrigação com o lojista e não constitui "
+                "receita. Uso da conta 2.1.01.001 é decisão fundamentada do time sobre fato confirmado por "
+                f"Helena.{review_note}",
             ))
         if proposed_code == "1.1.09.001":
             group = transfers[(entry.occurred_on, abs(entry.amount))]
@@ -127,16 +173,18 @@ def classify_banks(dataset: Dataset, period: date) -> ClosingPart:
             ):
                 issues.append((
                     "TRANSFERENCIA_EM_TRANSITO",
-                    "Transferência própria em trânsito: saiu do Aurora em 30/09/2026 e crédito no Meridiano em 01/10/2026 foi confirmado por Helena. Conferir extrato de outubro quando disponível; não é erro, perda ou recrédito de setembro.",
+                    "Transferência própria em trânsito: saiu do Aurora em 30/09/2026 e crédito no Meridiano em "
+                    "01/10/2026 foi confirmado por Helena. Solicitar extrato do Meridiano de outubro/2026 para "
+                    "conciliar a entrada; conta 1.1.09.001 adotada pelo time, sem erro, perda ou recrédito de "
+                    f"setembro.{review_note}",
                 ))
-            else:
                 issues.append((
                     "CONCILIAR_TRANSFERENCIA_PROPRIA",
                     "Transferência própria sem par inequívoco entre bancos por data e valor no mês; conferir comprovante e eventual trânsito, sem inventar entrada, receita ou perda.",
                 ))
         movements.append(ClassifiedMovement(
             identifier, entry.bank, entry.source.ref, entry.occurred_on.isoformat(),
-            entry.description, amount, code, "REGRA", confidence,
+            entry.description, amount, code, methods.get(identifier, "REGRA"), confidence,
         ))
         traces.append(trace(identifier, entry.source, amount, rule))
         for kind, reason in issues:

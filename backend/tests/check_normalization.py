@@ -31,6 +31,7 @@ from src.domain.policies import ESTABLISHMENT_BINDINGS, active_on, contract_cand
 from src.infrastructure.normalization_sources import (
     contract_id,
     contract_rows,
+    email_chunks,
     json_text,
     normalize_name,
     orbe_candidates,
@@ -491,6 +492,7 @@ def _check_reference_pipeline() -> None:
             assert all(len(group["samples"]) <= 2 for group in context["orbe_groups"])
             if stage == "NORMALIZACAO":
                 assert context["selection"]["samples_per_ec"] == 2
+                assert any(doc["file"].endswith(".eml") for doc in context.get("documents", []))
 
         horizonte = next(row for row in current if row["merchant"] == "Horizonte Viagens")
         horizonte_id = horizonte["source_id"]
@@ -629,6 +631,15 @@ def _check_reference_pipeline() -> None:
         assert load_reference(dataset, data_dir, cli_output / "referencias.json") == restored
 
 
+def _check_email_evidence() -> None:
+    data_dir = Path(__file__).resolve().parents[2] / "dados_tarvo"
+    chunks = email_chunks(data_dir)
+    assert chunks
+    assert any(c["source_id"].endswith(":headers") and "relatorios@pontecambio.com.br" in c["text"] for c in chunks)
+    assert any("50%" in c["text"] and "spread" in c["text"] for c in chunks)
+    assert any("75.374.179/0001-46" in c["text"] for c in chunks)
+
+
 def check() -> None:
     _check_schemas()
     _check_candidates()
@@ -636,6 +647,7 @@ def check() -> None:
     _check_real_contracts()
     _check_interpreter()
     _check_proposal_validation()
+    _check_email_evidence()
     _check_reference_pipeline()
 
 

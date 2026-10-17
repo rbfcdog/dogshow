@@ -12,7 +12,7 @@ from src.domain.models import Contract, Dataset
 from src.domain.normalization import ContractProposal, Investigation
 from src.domain.policies import ESTABLISHMENT_BINDINGS, checkout_exempt, contract_candidates
 from src.infrastructure.normalization_sources import (
-    contract_id, contract_rows, document_chunks, input_manifest, json_text,
+    contract_id, contract_rows, document_chunks, email_chunks, input_manifest, json_text,
     orbe_candidates, related_rows, retrieve_documents,
 )
 
@@ -32,15 +32,26 @@ def explicit_bounds(validity: str | None) -> tuple[date | None, date | None]:
     return (None, day) if (match[1] or "").lower() == "até " else (day, None)
 
 
-def context_for(focal: dict, rows: list[dict], dataset: Dataset, threshold: float, samples: int, limit: int) -> dict:
+def context_for(
+    focal: dict, rows: list[dict], dataset: Dataset, threshold: float, samples: int, limit: int,
+    chunks: list[dict] | None = None,
+) -> dict:
     candidates = related_rows(focal, rows, threshold, limit)
     candidates = [focal] + [r for r in candidates if r["source_id"] != focal["source_id"]][:limit - 1]
-    return {
+    context = {
         "focal": focal, "related_contracts": candidates,
         "orbe_groups": orbe_candidates(focal, dataset, threshold, samples),
         "selection": {"fuzzy_threshold": threshold, "samples_per_ec": samples,
             "max_related_contracts": limit, "orbe_has_cnpj_column": False},
     }
+    if chunks:
+        docs = retrieve_documents(chunks, focal, focal.get("establishment_code") or "")
+        emails = [c for c in chunks if c["file"].endswith(".eml")]
+        if emails and not any(d["file"].endswith(".eml") for d in docs):
+            docs = docs + emails[:4]
+        context["documents"] = docs
+        context["searched_documents"] = sorted({c["file"] for c in chunks})
+    return context
 
 
 def evidence_ids(context: dict) -> set[str]:
@@ -191,11 +202,11 @@ def normalize_reference(dataset: Dataset, data_dir: Path, docs_dir: Path, output
         raise ValueError("Artefatos devem ficar fora do diretório de originais.")
     output_dir.mkdir(parents=True, exist_ok=True)
     rows = contract_rows(data_dir, dataset)
-    chunks = document_chunks(docs_dir)
+    chunks = document_chunks(docs_dir) + email_chunks(data_dir)
     decisions: dict[str, dict] = {}
     normalizations = []
     for focal in (r for r in rows if not r["historical"]):
-        context = context_for(focal, rows, dataset, threshold, samples, candidate_limit)
+        context = context_for(focal, rows, dataset, threshold, samples, candidate_limit, chunks)
         proposal = interpreter.invoke(context, "NORMALIZACAO")
         if not isinstance(proposal, ContractProposal):
             raise ValueError("Saída do interpretador não corresponde ao schema de normalização.")

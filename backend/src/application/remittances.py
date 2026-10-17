@@ -3,6 +3,7 @@ from dataclasses import fields
 from datetime import date
 from decimal import Decimal
 
+from src.application.remittance_reconciliation import reconcile_remittance_resources
 from src.domain.closing import ClosingPart, Commission, Divergence, Invoice, Pending, trace
 from src.domain.models import Dataset, RemittanceEntry
 from src.domain.policies import (
@@ -31,6 +32,7 @@ def close_remittances(dataset: Dataset, period: date) -> ClosingPart:
     divergences = []
     pending = []
     traces = []
+    operations = []
     for operation, occurrences in sorted(groups.items()):
         if not any(in_period(entry.contracted_on, period) for entry in occurrences):
             continue
@@ -52,6 +54,7 @@ def close_remittances(dataset: Dataset, period: date) -> ClosingPart:
                 "Helena / Ponte Câmbio",
             ))
             continue
+        operations.append(entry)
         for index, repeated in enumerate(occurrences[1:], 1):
             identifier = output_id("REMESSA_DUPLICADA", period, operation, str(index))
             amount = money(repeated.spread)
@@ -147,6 +150,9 @@ def close_remittances(dataset: Dataset, period: date) -> ClosingPart:
             for entry, value in entries:
                 traces.append(trace(identifier, entry.source, value, "Participação de 50% arredondada por operação na NF única para Ponte"))
                 traces.append(trace(receipt_id, entry.source, value, "Total esperado da NF, não previsão do TED líquido"))
+    resources = reconcile_remittance_resources(dataset, period, tuple(operations))
+    pending.extend(resources.pending)
+    traces.extend(resources.traces)
     return ClosingPart(
         commissions=tuple(commissions), divergences=tuple(divergences), invoices=tuple(invoices),
         pending=tuple(pending), traces=tuple(traces),
