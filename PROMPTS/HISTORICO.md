@@ -1,7 +1,3 @@
-# Histórico de prompts reescritos
-
-Os 28 prompts abaixo **reescrevem e consolidam pedidos reais do usuário**, em ordem aproximada de evolução do projeto. Não são citações literais nem registram novas execuções. As mensagens originais, respostas e comandos de sessão permanecem em [HISTORICO_LITERAL.md](HISTORICO_LITERAL.md); use esse arquivo como evidência do que foi efetivamente enviado. Cada bloco a seguir é um prompt independente e copiável.
-
 1. Leia as instruções do hackathon e examine todos os arquivos originais do case Tarvo, inclusive a planilha anexada ao e-mail da Ponte. Identifique formatos, chaves, períodos, valores e divergências que possam afetar o fechamento. Explique a causa raiz do processo manual e associe as cinco saídas obrigatórias e o rastro às fontes de cada número. Separe evidências, hipóteses e perguntas ao financeiro; cite arquivos e linhas para os achados.
 
 2. Escreva um plano de implementação em `docs/PLANO_SOLUCAO_TARVO.md` a partir do edital e dos dados observados. Priorize checkout com comissão por lojista e rastro antes de ampliar para remessas, divergências, notas, bancos e pendências. Para cada etapa, indique entradas, dependências, regra confirmada ou pendente, saída verificável e teste com os arquivos reais. Diferencie mínimo, alvo e extra para não sacrificar números corretos em troca de uma interface.

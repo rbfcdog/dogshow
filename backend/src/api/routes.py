@@ -59,13 +59,19 @@ def create_router(data_dir: Path | None) -> APIRouter:
         from src.application.normalization import load_reference, normalize_reference
         from src.infrastructure.flow_log import FlowLog
         from src.infrastructure.slack_inbox import default_inbox, find_inbox_file, parse_inbox
+        from src.application.banking_reference import load_bank_proposals
 
         assert data_dir is not None
         saida_dir = Path("saida")
-        contract_dir = saida_dir / "referencias"
-        warnings = ["Classificação bancária apenas por regras; movimentos sem conta permanecem pendentes de revisão."]
+        contract_dir = Path(".tarvo-work/referencias")
+        bank_file = Path(".tarvo-work/referencias_bancarias_novas/referencias_bancarias.json")
+        warnings = ["Contas propostas por IA exigem validação humana antes de lançamento no ERP."]
         inbox_file = find_inbox_file(data_dir)
         policies = parse_inbox(inbox_file) if inbox_file else default_inbox()
+        try:
+            bank_proposals = load_bank_proposals(dataset, data_dir, Path("docs"), bank_file, period)
+        except (ValueError, OSError) as error:
+            raise HTTPException(409, f"Propostas bancárias ausentes ou obsoletas: {error}") from error
         try:
             with FlowLog(contract_dir) as log:
                 interpreter = OpenAIInterpreter(Path(".env"), contract_dir / "cache_llm", log=log, reuse_cache=False)
@@ -73,8 +79,9 @@ def create_router(data_dir: Path | None) -> APIRouter:
         except ModelUnavailable as error:
             raise HTTPException(502, str(error)) from error
         dataset = load_reference(dataset, data_dir, contract_dir / "referencias.json", inbox=policies)
-        applied = [f"normalização com IA ({interpreter.model})", "contratual: referencias.json"]
-        result = close_month(dataset, period, policies=policies)
+        applied = [f"normalização com IA ({interpreter.model})", f"contratual: {contract_dir / 'referencias.json'}",
+            f"propostas bancárias da IA ({len(bank_proposals)} contas não aprovadas): {bank_file}"]
+        result = close_month(dataset, period, bank_proposals=bank_proposals, policies=policies)
         late_count = sum(entry.source.file.startswith("06_orbe") for entry in dataset.checkout)
         export_csvs(result, saida_dir)
         from src.infrastructure.summary import render_summary

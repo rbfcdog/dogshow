@@ -485,6 +485,16 @@ def _reviewable(record: dict, dataset: Dataset, case: tuple, chunks: list[dict])
     return proposal
 
 
+def load_bank_proposals(dataset: Dataset, data_dir: Path, docs_dir: Path, reference_file: Path,
+    period: date) -> dict[str, BankProposal]:
+    """Validate current, evidenced AI proposals without claiming human approval."""
+    cases, records, chunks = _reference_state(_read(reference_file), dataset, data_dir, docs_dir, period)
+    return {
+        identifier: _reviewable(record, dataset, cases[identifier], chunks)
+        for identifier, record in records.items() if record.get("proposal") is not None
+    }
+
+
 def approve_bank_reference(dataset: Dataset, data_dir: Path, docs_dir: Path, reference_file: Path,
     output_file: Path, reviewer: str, movement_ids: list[str]) -> dict:
     if not isinstance(reviewer, str) or not reviewer.strip():

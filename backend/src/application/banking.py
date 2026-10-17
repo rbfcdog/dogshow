@@ -3,7 +3,7 @@ from datetime import date
 from decimal import Decimal
 from unicodedata import combining, normalize
 
-from src.domain.banking_reference import ReviewedBankDecision
+from src.domain.banking_reference import BankProposal, ReviewedBankDecision
 from src.domain.closing import ClassifiedMovement, ClosingPart, Pending, trace
 from src.domain.models import Account, BankEntry, Dataset
 from src.domain.policies import in_period, money, output_id
@@ -70,7 +70,8 @@ def _classify(entry: BankEntry) -> tuple[str, Decimal, str]:
 
 
 def classify_banks(dataset: Dataset, period: date, *,
-    reviewed_decisions: dict[str, ReviewedBankDecision] | None = None) -> ClosingPart:
+    reviewed_decisions: dict[str, ReviewedBankDecision] | None = None,
+    proposals: dict[str, BankProposal] | None = None) -> ClosingPart:
     entries = tuple(entry for entry in dataset.banks if in_period(entry.occurred_on, period))
     accounts: dict[str, list[Account]] = defaultdict(list)
     for account in dataset.accounts:
@@ -78,34 +79,48 @@ def classify_banks(dataset: Dataset, period: date, *,
     original_classifications = tuple(_classify(entry) for entry in entries)
     classifications = list(original_classifications)
     decisions = reviewed_decisions or {}
+    suggestions = proposals or {}
+    if set(decisions) & set(suggestions):
+        raise ValueError("Movimento não pode ter proposta e decisão revisada simultaneamente.")
     identifiers = {
         output_id("movimento", period, entry.bank, entry.source.file, entry.source.ref)
         for entry in entries
     }
-    if set(decisions) - identifiers:
+    if (set(decisions) | set(suggestions)) - identifiers:
         raise ValueError("Referência bancária contém movimento fora da competência ou do pacote.")
     methods: dict[str, str] = {}
     for index, entry in enumerate(entries):
         identifier = output_id("movimento", period, entry.bank, entry.source.file, entry.source.ref)
         decision = decisions.get(identifier)
-        if decision is None:
+        proposal = suggestions.get(identifier)
+        if decision is None and proposal is None:
             continue
-        if (
-            decision.movement_id != identifier or not decision.reviewed_by.strip()
-            or not decision.reference_id or not decision.evidence_ids or not decision.reason.strip()
-        ):
-            raise ValueError("Decisão bancária sem revisão, origem ou justificativa válida.")
-        candidates = accounts.get(decision.account_code, [])
+        if decision is not None:
+            if (
+                decision.movement_id != identifier or not decision.reviewed_by.strip()
+                or not decision.reference_id or not decision.evidence_ids or not decision.reason.strip()
+            ):
+                raise ValueError("Decisão bancária sem revisão, origem ou justificativa válida.")
+            code, reason, evidence = decision.account_code, decision.reason, decision.evidence_ids
+            attribution = f"Classificação IA revisada por {decision.reviewed_by}"
+            reference = decision.reference_id
+        else:
+            if proposal.movement_id != identifier or not proposal.account_code or not proposal.reason.strip() or not proposal.evidence_ids:
+                raise ValueError("Proposta bancária sem conta, origem ou justificativa válida.")
+            code, reason, evidence = proposal.account_code, proposal.reason, proposal.evidence_ids
+            attribution = "Proposta IA não revisada; validar antes de lançar no ERP"
+            reference = "propostas bancárias da competência"
+        candidates = accounts.get(code, [])
         if len(candidates) != 1 or candidates[0].kind != "ANALITICA" or not candidates[0].posting_allowed:
-            raise ValueError("Decisão bancária revisada aponta para conta inexistente ou não lançável.")
+            raise ValueError("Conta bancária proposta inexistente ou não lançável.")
         original_code, original_confidence, original_rule = original_classifications[index]
-        if original_code and original_confidence == Decimal("1") and original_code != decision.account_code:
-            raise ValueError("Decisão de IA não pode substituir conta resolvida por regra determinística.")
+        if original_code and original_confidence == Decimal("1") and original_code != code:
+            raise ValueError("IA não pode substituir conta resolvida por regra determinística.")
         rule = (
-            f"{original_rule} Classificação IA revisada por {decision.reviewed_by}: {decision.reason} "
-            f"Referência {decision.reference_id}; evidências: {', '.join(decision.evidence_ids)}."
+            f"{original_rule} {attribution}: {reason} "
+            f"Referência {reference}; evidências: {', '.join(evidence)}."
         )
-        classifications[index] = (decision.account_code, Decimal("0.80"), rule)
+        classifications[index] = (code, Decimal("0.80"), rule)
         methods[identifier] = "IA"
     transfers: dict[tuple[date, Decimal], list[BankEntry]] = defaultdict(list)
     for entry, (code, _, _) in zip(entries, classifications):
@@ -134,6 +149,12 @@ def classify_banks(dataset: Dataset, period: date, *,
                 rule = issues[-1][1]
             elif confidence < Decimal("1") and methods.get(identifier) != "IA":
                 issues.append(("VALIDAR_RECONHECIMENTO_CONTABIL", rule))
+        if identifier in suggestions:
+            issues.append(("VALIDAR_CLASSIFICACAO_IA",
+                "Conta sugerida por IA, ainda não aprovada para lançamento no ERP. " + suggestions[identifier].reason))
+        if _description(entry).startswith("DEVOLUCAO PIX"):
+            issues.append(("MOTIVO_DEVOLUCAO_PIX",
+                "Confirmar o motivo da devolução, o beneficiário e a obrigação antes de reenviar ou dar baixa."))
         if proposed_code == "1.1.09.002":
             issues.append((
                 "IDENTIFICAR_PIX",

@@ -6,7 +6,7 @@ import re
 from src.application.banking import classify_banks
 from src.application.checkout import close_checkout
 from src.application.remittances import close_remittances
-from src.domain.banking_reference import ReviewedBankDecision
+from src.domain.banking_reference import BankProposal, ReviewedBankDecision
 from src.domain.closing import ClosingResult, Pending
 from src.domain.models import Dataset
 from src.domain.policies import ZERO, period_key, in_period, output_id
@@ -75,13 +75,14 @@ def validate_closing(result: ClosingResult, dataset: Dataset) -> None:
 
 def close_month(dataset: Dataset, period: date, *,
     bank_decisions: dict[str, ReviewedBankDecision] | None = None,
+    bank_proposals: dict[str, BankProposal] | None = None,
     policies: SlackInbox | None = None) -> ClosingResult:
     if period.day != 1:
         raise ValueError("A competência deve ser o primeiro dia do mês.")
     parts = (
         close_checkout(dataset, period),
         close_remittances(dataset, period, policies=policies),
-        classify_banks(dataset, period, reviewed_decisions=bank_decisions),
+        classify_banks(dataset, period, reviewed_decisions=bank_decisions, proposals=bank_proposals),
     )
     policy_pending = []
     if not policies:

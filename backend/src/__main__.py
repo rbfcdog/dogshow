@@ -11,7 +11,8 @@ from src.infrastructure.readers import load_dataset
 from src.infrastructure.openai_normalizer import ModelUnavailable, OpenAIInterpreter
 from src.infrastructure.summary import render_summary
 
-CONTRACT_REFERENCE = Path("referencias") / "referencias.json"
+CONTRACT_REFERENCE = Path(".tarvo-work") / "referencias" / "referencias.json"
+BANK_PROPOSALS = Path(".tarvo-work") / "referencias_bancarias_novas" / "referencias_bancarias.json"
 
 
 def resolve_env_file(path: Path) -> Path:
@@ -26,9 +27,10 @@ def main() -> None:
     parser.add_argument("--entrada", required=True, type=Path)
     parser.add_argument("--competencia", required=True)
     parser.add_argument("--saida", required=True, type=Path)
-    parser.add_argument("--referencias", type=Path, help="Destino da referência contratual gerada por IA; padrão: <saida>/referencias/referencias.json.")
-    parser.add_argument("--referencias-bancarias", type=Path,
-        help="Referência bancária aprovada opcional; sem ela, usa regras e mantém pendências bancárias.")
+    parser.add_argument("--referencias", type=Path, help="Destino da referência contratual gerada por IA; padrão: .tarvo-work/referencias/referencias.json.")
+    parser.add_argument("--referencias-bancarias", type=Path, help="Referência bancária revisada; prevalece sobre propostas.")
+    parser.add_argument("--propostas-bancarias", type=Path, default=BANK_PROPOSALS,
+        help="Propostas da IA validadas contra as fontes atuais; sem aprovação, geram pendências. Padrão: .tarvo-work/referencias_bancarias_novas/referencias_bancarias.json.")
     parser.add_argument("--env-file", type=Path, default=Path(".env"))
     parser.add_argument("--docs", type=Path, default=Path("docs"))
     parser.add_argument("--caixa-de-entrada", type=Path,
@@ -44,7 +46,7 @@ def main() -> None:
         parser.error("Competência inválida: use ano entre 0001 e 9999.")
     applied: list[str] = []
     warnings: list[str] = []
-    contract_file = arguments.referencias or arguments.saida / CONTRACT_REFERENCE
+    contract_file = arguments.referencias or CONTRACT_REFERENCE
     bank_file = arguments.referencias_bancarias
     if contract_file.name != "referencias.json":
         parser.error("A normalização grava referencias.json; use --referencias apontando para esse nome.")
@@ -57,12 +59,17 @@ def main() -> None:
             policies = parse_inbox(inbox_file) if inbox_file else default_inbox()
             applied.append(f"políticas confirmadas ({policies.source_file}): {len(policies.bindings)} vínculos, {len(policies.exemptions)} isenções")
         bank_decisions = None
+        bank_proposals = None
         if bank_file is not None:
             from src.application.banking_reference import load_bank_reference
             bank_decisions = load_bank_reference(dataset, arguments.entrada, arguments.docs, bank_file, period)
             applied.append(f"bancária aprovada por revisor ({len(bank_decisions)} decisões): {bank_file}")
         else:
-            warnings.append("Classificação bancária apenas por regras; movimentos sem conta permanecem pendentes de revisão.")
+            from src.application.banking_reference import load_bank_proposals
+            bank_proposals = load_bank_proposals(dataset, arguments.entrada, arguments.docs,
+                arguments.propostas_bancarias, period)
+            applied.append(f"propostas bancárias da IA ({len(bank_proposals)} contas não aprovadas): {arguments.propostas_bancarias}")
+            warnings.append("Contas propostas por IA exigem validação humana antes de lançamento no ERP.")
         from src.application.normalization import normalize_reference, load_reference
         from src.infrastructure.flow_log import FlowLog
 
@@ -73,7 +80,8 @@ def main() -> None:
         applied.append(f"normalização com IA ({interpreter.model})")
         dataset = load_reference(dataset, arguments.entrada, contract_file, inbox=policies)
         applied.append(f"contratual: {contract_file}")
-        result = close_month(dataset, period, bank_decisions=bank_decisions, policies=policies)
+        result = close_month(dataset, period, bank_decisions=bank_decisions,
+            bank_proposals=bank_proposals, policies=policies)
         late_count = sum(1 for e in dataset.checkout if e.source.file.startswith("06_orbe"))
         export_csvs(result, arguments.saida)
     except DataPackError as error:

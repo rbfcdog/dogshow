@@ -17,6 +17,7 @@ dist/
 Tarvo_Data_Pack_*.zip
 /docs/
 /saida/*
+/.tarvo-work/
 !/saida/comissoes_por_lojista.csv
 !/saida/divergencias_taxa.csv
 !/saida/notas_a_emitir.csv

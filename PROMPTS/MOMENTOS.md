@@ -1,27 +1,53 @@
-# Momentos relevantes de uso de IA
+## 1. Corrigir a leitura da planilha
 
-Os momentos abaixo descrevem pedidos e resultados dos [registros literais](HISTORICO_LITERAL.md). Os 28 prompts em [HISTORICO.md](HISTORICO.md) são reescritas desses pedidos, não execuções adicionais.
+Pedimos análise do pacote, e a IA inicialmente afirmou que o XLSX tinha colunas desalinhadas. A conferência das coordenadas mostrou células vazias omitidas pelo leitor textual; corrigimos o diagnóstico antes de tratar aquilo como erro dos dados.
 
-## 1. Conferir a fonte antes de confiar na IA
+Registros: 014–016 (`216521a3`, `6b479da5`, `8e399976`).
 
-Pedimos a análise dos arquivos (temas dos prompts reescritos 1 e 4); a IA apontou colunas desalinhadas, mas a conferência das coordenadas do XLSX mostrou que o leitor textual havia omitido células vazias. Corrigimos o diagnóstico e não tratamos um defeito da extração como defeito dos dados.
+## 2. Separar diagnóstico de fechamento
 
-Registros literais: 014–016 (`216521a3`, `6b479da5`, `8e399976`).
+Pedimos um backend Python modular, e a IA entregou uma API que lia 1.943 lançamentos de checkout, 233 linhas cambiais e 184 movimentos bancários. Mantivemos a primeira entrega identificada como **diagnóstico**, sem apresentá-la como comissão ou faturamento aprovados.
 
-## 2. Delimitar a autonomia da IA
+Registros: 021–025 (`b6931516`, `f297c95e`, `70e1a727`).
 
-Questionamos se o case precisava de LLM e corrigimos a recomendação inicial de não usá-la no produto (temas dos prompts reescritos 5–6 e 16); a IA passou a propor investigação de exceções sem inventar contratos ou valores. A decisão adotada foi manter cálculos determinísticos e distinguir ausência de intervenção durante o lote de autorização para alterar regras financeiras.
+## 3. Corrigir o papel da IA no produto
 
-Registros literais: 031–036 (`05887062`, `c396c40b`, `b9513493`).
+Questionamos se o case precisava de LLM e contestamos a recomendação inicial de deixá-la apenas no desenvolvimento. A IA reviu a proposta para investigar exceções e estruturar informação, enquanto cálculos financeiros permaneciam determinísticos e falta de contrato continuava visível.
 
-## 3. Trocar hipótese por resposta do financeiro
+Registros: 031–036 (`26754388`, `05887062`, `b9513493`, `a19fa54c`).
 
-Fornecemos as threads e pedimos a aplicação das regras confirmadas (temas dos prompts reescritos 8–9); a IA havia antes recomendado critérios ainda não confirmados. Substituímos as hipóteses por arredondamento por operação, isenção da Casa e bloqueio da Atlas, e conferimos a geração dos seis CSVs com rastro.
+## 4. Substituir premissas por respostas do financeiro
 
-Registros literais: 043, 046 e 051 (`a75b8a03`, `50be6a64`, `a0f00c0c`).
+Fornecemos as threads e pedimos aplicação no backend; a IA distinguiu regras confirmadas de propostas ainda não implementadas. Incorporamos arredondamento por operação, isenção da Casa e bloqueio da Atlas e registramos a execução dos seis CSVs com rastro.
 
-## 4. Testar a IA bancária além da taxa de acerto
+Registros: 043, 045–046 e 051 (`a75b8a03`, `08ce5960`, `50be6a64`, `a0f00c0c`).
 
-Pedimos avaliação cega de movimentos bancários e correção das falhas (temas dos prompts reescritos 19–20); em 20 casos, a IA acertou 18, mas citou uma linha inválida, não conectou uma TED às remessas do dia e atribuiu ao financeiro uma conta que era premissa do time. Restringimos IDs de evidência e códigos ao conjunto válido, fornecemos candidatos cambiais do dia e separamos autoridade confirmada de hipótese no dossiê de revisão.
+## 5. Formular uma dúvida que altera a nota
 
-Registros literais: 088–089; detalhes do teste e das correções ficam nas notas locais não versionadas.
+Pedimos uma pergunta concreta para o financeiro, e a IA preparou em `docs/PERGUNTA_FINANCEIRO_CASA_ESTUDANTE.md` o caso do estorno de venda de agosto durante a isenção de setembro. O valor de −R$ 5,50 tornou explícito por que a regra mudava saldo e nota, em vez de aceitar uma resposta genérica.
+
+Registros: 052–055 (`9e2379a1`, `7285ae45`, `8920db8d`, `6045b399`).
+
+## 6. Não apagar a vigência antiga da Bridge
+
+Propusemos usar IA para completar ECs e retirar duplicatas da referência contratual; a IA observou que as duas linhas da Bridge eram versões válidas em períodos distintos. Registramos que a normalização deve preservar ambas e escolher a taxa pela data da venda, não eliminar a linha anterior.
+
+Registros: 056–057 (`bd879c2b`, `44f62014`); decisão detalhada em `docs/NOTAS_SOLUCAO.md`.
+
+## 7. Reagir ao feedback de repetibilidade da banca
+
+Enviamos à IA o retorno de Manuel: ela não deveria escolher cadastro e taxa no caminho de cada número, e perguntas materiais precisavam chegar cedo ao financeiro. Revisamos o plano para usar referências fundamentadas e revisáveis antes da apuração, mantendo execução em lote sem aprovação por transação.
+
+Registros: 076–078 (`1d81721e`, `99ef0eab`, `3ad6cdc1`); revisão em `docs/PLANO_SOLUCAO_TARVO.md`.
+
+## 8. Testar a IA bancária além da taxa de acerto
+
+Pedimos avaliação cega da classificação bancária: a IA acertou 18 de 20 casos, mas citou linha inválida, não ligou uma TED às remessas do dia e atribuiu ao financeiro uma premissa do time. Restringimos IDs e contas válidos, incluímos candidatos cambiais do dia e separamos autoridades no dossiê de revisão.
+
+Registros: 088–089; correções e verificação em `docs/NOTAS_SOLUCAO.md`, seção 13.
+
+## 9. Incorporar dados novos sem edição manual
+
+Repassamos à IA o aviso das 14 linhas tardias da Orbe e perguntamos se o e-mail da Ponte entrava na referência. A ingestão passou a preservar origem das novas linhas e a extração do corpo do EML alimentou normalização e RCA; a execução documentada conferiu 28 contribuições adicionais no rastro.
+
+Registro: 091 (`d63ffb22`); implementação e conferência em `docs/NOTAS_SOLUCAO.md`, seção 12.
