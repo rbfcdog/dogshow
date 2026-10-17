@@ -1,0 +1,39 @@
+# Documents and presentations
+*.md
+*.doc
+*.docx
+*.odt
+*.pdf
+*.ppt
+*.pptx
+*.xls
+*.xlsx
+*.xlsm
+.~lock.*
+
+# Financial source packs and generated outputs
+/dados_tarvo/
+/saida/
+/Tarvo_Data_Pack_*.zip
+*.eml
+*.ofx
+
+# Python environments and generated artifacts
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Local secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
