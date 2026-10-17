@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "fonte": "docs/THREADS_FINANCEIRO_TARVO.md",
+  "descricao": "Políticas comerciais e regras operacionais confirmadas pelo Financeiro (Helena) nas threads oficiais da Tarvo.",
+  "bindings": [
+    {
+      "ec": "1038867654",
+      "cnpj": "07752116000126",
+      "merchant": "Kiwi Experience",
+      "reason": "EC 1038867654 vinculado a Kiwi Experience conforme resposta de Helena no Slack (thread 4)."
+    },
+    {
+      "ec": "1043396662",
+      "cnpj": "78576234000179",
+      "merchant": "Horizonte Viagens",
+      "reason": "EC 1043396662 vinculado a Horizonte Viagens conforme resposta de Helena no Slack (thread 4)."
+    },
+    {
+      "ec": "1043300981",
+      "cnpj": "66564512000199",
+      "merchant": "Novo Horizonte Intercambio",
+      "reason": "EC 1043300981 vinculado a Novo Horizonte Intercambio conforme resposta de Helena no Slack (thread 4)."
+    }
+  ],
+  "exemptions": [
+    {
+      "cnpj": "00520815000100",
+      "merchant": "Casa do Estudante Viagens Ltda",
+      "ec": "1018325654",
+      "rate": "0.00",
+      "modalities": [
+        "DEBITO",
+        "CREDITO A VISTA",
+        "CREDITO 2-6X",
+        "CREDITO 7-12X",
+        "PIX",
+        "ANTECIPACAO"
+      ],
+      "start_date": "2026-09-01",
+      "end_date": "2026-12-31",
+      "preserve_historical_sales": true,
+      "reason": "Tarifa zerada de setembro a dezembro para MDR e antecipação confirmada por Helena no Slack (thread 7; acordo comercial para segurar cliente)."
+    }
+  ],
+  "blocks": [
+    {
+      "ec": "1076801732",
+      "merchant": "Atlas Idiomas",
+      "faturar": false,
+      "reason": "Não faturar a Atlas até o comercial confirmar contrato assinado na aba vigente (resposta de Helena no Slack - thread 4)."
+    }
+  ],
+  "spreads": {
+    "default": {
+      "spread": "0.015",
+      "reason": "Spread vazio/padrão = 1,5% sobre PTAX — Helena, thread 6"
+    },
+    "17217888000111": {
+      "spread": "0.012",
+      "merchant": "Mundo Aberto",
+      "reason": "Spread de 1,20% negociado em julho confirmado por Helena no Slack (thread 6)"
+    }
+  },
+  "negative_spreads": {
+    "excluir_comissao": true,
+    "status_pendencia": "VALIDAR_SPREAD_NEGATIVO",
+    "reason": "Spread negativo reportado (trava vencida); excluído da comissão e da NF, registrar contestação — Helena, thread 6"
+  }
+}

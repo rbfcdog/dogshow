@@ -321,7 +321,7 @@ Foram exercitados duas vezes o fechamento contratual com 27 respostas novas da O
 - Versões reescritas dos pedidos, não transcrição: [PROMPTS/HISTORICO.md](PROMPTS/HISTORICO.md).
 - Momentos relevantes de uso da IA: [PROMPTS/MOMENTOS.md](PROMPTS/MOMENTOS.md).
 
-`docs/` e os arquivos financeiros originais em `dados_tarvo/` permanecem locais e não são enviados ao repositório. O README, `HIPOTESES.md`, o histórico de prompts e os seis CSVs são os entregáveis públicos; nenhuma credencial, cache ou referência bancária sem revisão é publicada.
+`docs/` permanece local e não é enviado ao repositório. Os nove arquivos de entrada em `dados_tarvo/`, o README, `HIPOTESES.md`, o histórico de prompts e os seis CSVs são versionados; credenciais em `.env`, caches e referências bancárias sem revisão não são publicados.
 
 Os leitores reconhecem os papéis e cabeçalhos atuais de Orbe, contratos, e-mail Ponte, plano de contas, Aurora CSV e Meridiano OFX 1.02/SGML. Não prometem aceitar layouts diferentes. Uma pasta deve ter exatamente um arquivo por papel; múltiplos candidatos geram erro explícito. CNPJs fictícios são normalizados sem validar dígitos verificadores.
 
