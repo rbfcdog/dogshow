@@ -177,7 +177,7 @@ def materialize(dataset: Dataset, decisions: dict[str, dict], rows: list[dict],
             for sig in matching_signatures:
                 base_contract, base_canonical = merged[sig]
                 if ex.preserve_historical_sales and ex.start_date:
-                    hist_contract = replace(base_contract, validity_end=ex.start_date - timedelta(days=1))
+                    hist_contract = replace(base_contract, validity_end=ex.start_date - timedelta(days=1), note=None, comments=None)
                     hist_sig = json_text({"cnpj": hist_contract.cnpj, "ec": hist_contract.establishment_code,
                         "rates": hist_contract.rates, "remittance_rate": hist_contract.remittance_rate,
                         "start": hist_contract.validity_start, "end": hist_contract.validity_end})
@@ -186,7 +186,7 @@ def materialize(dataset: Dataset, decisions: dict[str, dict], rows: list[dict],
                         "reason": f"{base_canonical['reason']} Vigência anterior à isenção da caixa de entrada."}
                 exempt_rates = {k: ex.rate if k in ex.modalities else v for k, v in base_contract.rates.items()}
                 exempt_contract = replace(base_contract, rates=exempt_rates,
-                    validity_start=ex.start_date, validity_end=ex.end_date)
+                    validity_start=ex.start_date, validity_end=ex.end_date, note=None, comments=None)
                 exempt_sig = json_text({"cnpj": exempt_contract.cnpj, "ec": exempt_contract.establishment_code,
                     "rates": exempt_contract.rates, "remittance_rate": exempt_contract.remittance_rate,
                     "start": exempt_contract.validity_start, "end": exempt_contract.validity_end})
@@ -443,6 +443,49 @@ def export_reference(output_dir: Path, report: dict, canonical: list[dict], join
         writer = csv.DictWriter(stream, fieldnames=fields, delimiter=";", lineterminator="\n")
         writer.writeheader()
         writer.writerows(joined)
+def apply_inbox_policies(dataset: Dataset, inbox: SlackInbox | None) -> Dataset:
+    if inbox is None:
+        return dataset
+    contracts = list(dataset.contracts)
+    if inbox.bindings:
+        for idx, contract in enumerate(contracts):
+            if contract.establishment_code is None:
+                for binding_ec, binding in inbox.bindings.items():
+                    if binding.cnpj == contract.cnpj:
+                        contracts[idx] = replace(contract, establishment_code=binding_ec)
+                        break
+    if inbox.exemptions:
+        new_contracts = []
+        for contract in contracts:
+            if contract.cnpj in inbox.exemptions:
+                ex = inbox.exemptions[contract.cnpj]
+                start_date = contract.validity_start or date(2026, 1, 1)
+                if ex.preserve_historical_sales and ex.start_date:
+                    hist_contract = replace(
+                        contract,
+                        validity_start=start_date,
+                        validity_end=ex.start_date - timedelta(days=1),
+                        structured_validity=True,
+                        note=None,
+                        comments=None,
+                    )
+                    new_contracts.append(hist_contract)
+                exempt_rates = {k: ex.rate if k in ex.modalities else v for k, v in contract.rates.items()}
+                exempt_contract = replace(
+                    contract,
+                    rates=exempt_rates,
+                    validity_start=ex.start_date,
+                    validity_end=ex.end_date,
+                    structured_validity=True,
+                    note=None,
+                    comments=None,
+                )
+                new_contracts.append(exempt_contract)
+            else:
+                new_contracts.append(contract)
+        contracts = new_contracts
+    return replace(dataset, contracts=tuple(contracts))
+
 
 
 def load_reference(dataset: Dataset, data_dir: Path, reference_file: Path,

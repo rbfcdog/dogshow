@@ -48,6 +48,14 @@ class InboxSpread:
     spread: Decimal
     source_id: str
     reason: str
+@dataclass(frozen=True)
+class InboxNegativeSpreads:
+    excluir_comissao: bool
+    status_pendencia: str
+    source_id: str
+    reason: str
+
+
 
 
 @dataclass
@@ -57,6 +65,7 @@ class SlackInbox:
     exemptions: dict[str, InboxExemption] = field(default_factory=dict)
     blocks: dict[str, InboxBlock] = field(default_factory=dict)
     spreads: dict[str | None, InboxSpread] = field(default_factory=dict)
+    negative_spreads: InboxNegativeSpreads | None = None
     chunks: list[dict] = field(default_factory=list)
     raw_messages: list[dict] = field(default_factory=list)
 
@@ -85,6 +94,8 @@ def find_inbox_file(data_dir: Path | None = None, explicit_path: Path | None = N
     search_dirs.extend([Path("dados_tarvo"), Path("docs"), Path(".")])
 
     candidate_patterns = [
+        "07_politicas_confirmadas*.json",
+        "*politicas*.json",
         "caixa_de_entrada.json",
         "caixa_de_entrada.csv",
         "slack_inbox.json",
@@ -119,7 +130,7 @@ def parse_inbox(path: Path) -> SlackInbox:
         try:
             data = json.loads(content)
             if isinstance(data, dict):
-                if any(k in data for k in ("bindings", "exemptions", "blocks", "spreads")):
+                if any(k in data for k in ("bindings", "exemptions", "blocks", "spreads", "negative_spreads")):
                     structured_payload = data
                 for key in ("mensagens", "messages", "items", "conversas", "threads"):
                     if key in data and isinstance(data[key], list):
@@ -230,6 +241,14 @@ def _load_structured(payload: dict, inbox: SlackInbox, source_name: str) -> None
                 source_id=f"{source_name}:spread:{k}",
                 reason=str(item.get("reason", "Spread confirmado na caixa de entrada do Slack")),
             )
+    if "negative_spreads" in payload:
+        neg = payload["negative_spreads"]
+        inbox.negative_spreads = InboxNegativeSpreads(
+            excluir_comissao=bool(neg.get("excluir_comissao", True)),
+            status_pendencia=str(neg.get("status_pendencia", "VALIDAR_SPREAD_NEGATIVO")),
+            source_id=f"{source_name}:negative_spreads",
+            reason=str(neg.get("reason", "Spread negativo reportado (trava vencida); excluído da comissão e da NF — Helena, thread 6")),
+        )
 
 
 def _extract_items_of_interest(messages: list[dict], inbox: SlackInbox, source_name: str) -> None:
@@ -327,3 +346,52 @@ def _extract_items_of_interest(messages: list[dict], inbox: SlackInbox, source_n
                 source_id=f"{source_name}:spread:padrao",
                 reason="Spread padrão de remessa de 1,5% sobre a PTAX confirmado por Helena no Slack (thread 6).",
             )
+    if "trava vencida" in plain or "spreads negativos" in plain or "spread negativo" in plain:
+        if inbox.negative_spreads is None:
+            inbox.negative_spreads = InboxNegativeSpreads(
+                excluir_comissao=True,
+                status_pendencia="VALIDAR_SPREAD_NEGATIVO",
+                source_id=f"{source_name}:negative_spreads",
+                reason="Spread negativo reportado (trava vencida); excluído da comissão e da NF, registrar contestação — Helena, thread 6.",
+            )
+
+
+DEFAULT_POLICIES_PAYLOAD = {
+    "version": 1,
+    "bindings": [
+        {"ec": "1038867654", "cnpj": "07752116000126", "merchant": "Kiwi Experience", "reason": "EC 1038867654 vinculado a Kiwi Experience conforme resposta de Helena no Slack (thread 4)."},
+        {"ec": "1043396662", "cnpj": "78576234000179", "merchant": "Horizonte Viagens", "reason": "EC 1043396662 vinculado a Horizonte Viagens conforme resposta de Helena no Slack (thread 4)."},
+        {"ec": "1043300981", "cnpj": "66564512000199", "merchant": "Novo Horizonte Intercambio", "reason": "EC 1043300981 vinculado a Novo Horizonte Intercambio conforme resposta de Helena no Slack (thread 4)."}
+    ],
+    "exemptions": [
+        {
+            "cnpj": "00520815000100",
+            "merchant": "Casa do Estudante Viagens Ltda",
+            "ec": "1018325654",
+            "rate": "0.00",
+            "modalities": ["DEBITO", "CREDITO A VISTA", "CREDITO 2-6X", "CREDITO 7-12X", "PIX", "ANTECIPACAO"],
+            "start_date": "2026-09-01",
+            "end_date": "2026-12-31",
+            "preserve_historical_sales": True,
+            "reason": "Tarifa zerada de setembro a dezembro para MDR e antecipação confirmada por Helena no Slack (thread 7; acordo comercial para segurar cliente)."
+        }
+    ],
+    "blocks": [
+        {"ec": "1076801732", "merchant": "Atlas Idiomas", "faturar": False, "reason": "Não faturar a Atlas até o comercial confirmar contrato assinado na aba vigente (resposta de Helena no Slack - thread 4)."}
+    ],
+    "spreads": {
+        "default": {"spread": "0.015", "reason": "Spread vazio/padrão = 1,5% sobre PTAX — Helena, thread 6"},
+        "17217888000111": {"spread": "0.012", "merchant": "Mundo Aberto", "reason": "Spread de 1,20% negociado em julho confirmado por Helena no Slack (thread 6)"}
+    },
+    "negative_spreads": {
+        "excluir_comissao": True,
+        "status_pendencia": "VALIDAR_SPREAD_NEGATIVO",
+        "reason": "Spread negativo reportado (trava vencida); excluído da comissão e da NF, registrar contestação — Helena, thread 6"
+    }
+}
+
+
+def default_inbox() -> SlackInbox:
+    inbox = SlackInbox(source_file="07_politicas_confirmadas (padrão em código)")
+    _load_structured(DEFAULT_POLICIES_PAYLOAD, inbox, "07_politicas_confirmadas (padrão em código)")
+    return inbox

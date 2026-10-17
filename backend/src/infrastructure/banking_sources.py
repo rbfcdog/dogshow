@@ -46,8 +46,11 @@ def markdown_chunks(docs_dir: Path) -> list[dict]:
 
 
 def bank_manifest(data_dir: Path, docs_dir: Path) -> dict[str, str]:
-    files = sorted(p for p in data_dir.iterdir() if p.is_file())
-    documents = sorted(docs_dir.glob("*.md")) if docs_dir.exists() else []
+    files = sorted(p for p in data_dir.iterdir() if p.is_file() and not p.name.startswith("."))
+    documents = sorted(
+        p for p in (docs_dir.glob("*.md") if docs_dir.exists() else [])
+        if not p.name.startswith(".")
+    )
     return {f"dados/{p.name}": digest(p.read_bytes()) for p in files} | {
         f"docs/{p.name}": digest(p.read_bytes()) for p in documents
     }

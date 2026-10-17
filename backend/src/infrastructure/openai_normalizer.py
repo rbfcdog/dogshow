@@ -76,6 +76,22 @@ parcela contra agenda de recebíveis está fora deste fechamento) ou TEDs de liq
 para a Ponte Câmbio no Meridiano apoiadas por DAILY_REMITTANCE_CANDIDATE (2.1.02.001, baixa agregada
 de recursos de lojistas para remessas) — proponha a conta analítica correspondente, registre o limite
 de escopo em reason e deixe missing_information vazio se não houver pendência operacional em issues.
+FLUXOS ROTINEIROS (resolva diretamente, sem pedir comprovante individual):
+(a) PIX ENVIADO no Aurora, valor negativo, cujo nome ou CNPJ da descrição corresponda a lojista com
+kind=CONTRACT em related_records (EXACT_CNPJ ou NAME_CANDIDATE): é repasse/liquidação de checkout ao
+lojista — proponha 2.1.01.001 (Repasses a lojistas a pagar);
+(b) PIX RECEB no Meridiano, valor positivo, correspondendo a cliente com kind=CONTRACT ou REMITTANCE
+em related_records: é entrada de recursos do cliente para operação cambial — proponha 2.1.02.001
+(Recursos de clientes).
+Nestes dois fluxos o vínculo cadastral em related_records É a evidência de escopo suficiente: cite
+movement.source_id, a conta proposta e o registro de vínculo correspondente em evidence_ids;
+missing_information DEVE ser string vazia — pedir comprovante individual ou confirmação do Financeiro
+nestes fluxos rotineiros é ERRO. Escreva reason em termos do padrão da operação (banco, natureza,
+vínculo cadastral), sem nome específico do lojista, pois a justificativa é reutilizada para
+movimentos equivalentes do mesmo padrão. Pendência VALIDAR_RECONHECIMENTO_CONTABIL é aviso de
+revisão contábil, não informação faltante: não a copie para missing_information. A cautela sobre
+decisão fundamentada do time aplica-se apenas a crédito sem identificação (1.1.09.002), devolução de
+repasse por motivo desconhecido e transferência em trânsito (1.1.09.001), não aos fluxos acima.
 Na etapa RCA_BANCARIA, separe diagnosis comprovado de hypotheses não confirmadas; uma proposta
 continua sendo apenas sugestão, nunca aprovação. Quando baseline.confianca for igual a 1, a conta
 contábil já está definida por regra determinística: retorne proposal = null e investigue apenas a
@@ -84,7 +100,8 @@ searched_documents significa busca lexical nos arquivos, não leitura integral p
 os trechos efetivamente enviados em documents foram recuperados para esta solicitação; não afirme
 ter lido outros trechos, anexos, comprovantes ou extratos. Cite os trechos que sustentam cada decisão.
 Nomes normalizados, COUNTERPART_CANDIDATE e DAILY_REMITTANCE_CANDIDATE são evidências de contexto,
-não comprovante individual por transação ou identidade societária definitiva.
+não comprovante individual por transação ou identidade societária definitiva — exceto nos fluxos
+rotineiros definidos acima, nos quais o vínculo cadastral correspondente é a evidência admitida.
 conta_codigo é a contrapartida do movimento, não uma afirmação de receita ou despesa nova.
 Classificação contábil não é conciliação documental: sugerir uma conta não identifica a origem
 de crédito desconhecido, não prova motivo de devolução e não confirma extrato futuro ausente.

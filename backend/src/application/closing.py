@@ -10,6 +10,7 @@ from src.domain.banking_reference import ReviewedBankDecision
 from src.domain.closing import ClosingResult, Pending
 from src.domain.models import Dataset
 from src.domain.policies import ZERO, period_key, in_period, output_id
+from src.infrastructure.slack_inbox import SlackInbox
 
 TECHNICAL_ASSUMPTIONS = (
     "Somente dados_tarvo é fonte de fatos. Resultados são preliminares até validar políticas não documentadas no pacote.",
@@ -73,23 +74,25 @@ def validate_closing(result: ClosingResult, dataset: Dataset) -> None:
 
 
 def close_month(dataset: Dataset, period: date, *,
-    bank_decisions: dict[str, ReviewedBankDecision] | None = None) -> ClosingResult:
+    bank_decisions: dict[str, ReviewedBankDecision] | None = None,
+    policies: SlackInbox | None = None) -> ClosingResult:
     if period.day != 1:
         raise ValueError("A competência deve ser o primeiro dia do mês.")
     parts = (
         close_checkout(dataset, period),
-        close_remittances(dataset, period),
+        close_remittances(dataset, period, policies=policies),
         classify_banks(dataset, period, reviewed_decisions=bank_decisions),
     )
     policy_pending = []
-    for name, entries, date_field in (("CHECKOUT", dataset.checkout, "occurred_on"),
-        ("REMESSA", dataset.remittances, "contracted_on")):
-        first = next((e for e in entries if in_period(getattr(e, date_field), period)), None)
-        if first:
-            policy_pending.append(Pending(output_id("politica-pacote", period, name), "VALIDAR_POLITICA_APURACAO",
-                first.source.ref, None,
-                f"{name}: o pacote não confirma integralmente corte, arredondamento, ajustes e política fiscal. "
-                "Resultados são projeções sob premissas técnicas declaradas, não fechamento aprovado.", "Financeiro"))
+    if not policies:
+        for name, entries, date_field in (("CHECKOUT", dataset.checkout, "occurred_on"),
+            ("REMESSA", dataset.remittances, "contracted_on")):
+            first = next((e for e in entries if in_period(getattr(e, date_field), period)), None)
+            if first:
+                policy_pending.append(Pending(output_id("politica-pacote", period, name), "VALIDAR_POLITICA_APURACAO",
+                    first.source.ref, None,
+                    f"{name}: o pacote não confirma integralmente corte, arredondamento, ajustes e política fiscal. "
+                    "Resultados são projeções sob premissas técnicas declaradas, não fechamento aprovado.", "Financeiro"))
     pending = tuple(row for part in parts for row in part.pending) + tuple(policy_pending)
     result = ClosingResult(
         competencia=period_key(period),

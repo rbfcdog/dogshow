@@ -10,7 +10,8 @@ def _brl(value: Decimal) -> str:
     return "R$ " + text.translate(str.maketrans({",": ".", ".": ","}))
 
 
-def render_summary(result: ClosingResult, applied: tuple[str, ...], warnings: tuple[str, ...], output_dir: str) -> str:
+def render_summary(result: ClosingResult, applied: tuple[str, ...], warnings: tuple[str, ...], output_dir: str,
+    late_adjustments: int = 0) -> str:
     by_line = {
         line: sum((row.comissao_brl for row in result.comissoes_por_lojista if row.linha_negocio == line), ZERO)
         for line in ("CHECKOUT", "REMESSA")
@@ -22,6 +23,7 @@ def render_summary(result: ClosingResult, applied: tuple[str, ...], warnings: tu
     deciders = Counter(row.quem_decide for row in result.pendencias)
     lines = [
         f"FECHAMENTO TARVO {result.competencia} — {result.status}",
+        *( (f"Ajustes tardios 06_orbe: {late_adjustments} linhas integradas ao checkout",) if late_adjustments > 0 else () ),
         "",
         "Referências aplicadas: " + ("; ".join(applied) if applied else "nenhuma (somente dados originais)"),
         *(f"ATENÇÃO: {warning}" for warning in warnings),

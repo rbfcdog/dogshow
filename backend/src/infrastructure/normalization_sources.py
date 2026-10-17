@@ -305,5 +305,5 @@ def retrieve_documents(chunks: list[dict], focal: dict, ec: str, limit: int = 24
 
 def input_manifest(data_dir: Path) -> dict[str, str]:
     require_data_dir(data_dir)
-    files = sorted(p for p in data_dir.iterdir() if p.is_file())
+    files = sorted(p for p in data_dir.iterdir() if p.is_file() and not p.name.startswith("."))
     return {f"dados/{p.name}": digest(require_source_file(p).read_bytes()) for p in files}

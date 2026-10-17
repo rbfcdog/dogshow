@@ -30,6 +30,8 @@ def main() -> None:
     parser.add_argument("--docs", type=Path, default=Path("docs"))
     parser.add_argument("--caixa-de-entrada", type=Path,
         help="Arquivo da caixa de entrada do Slack (JSON, CSV ou texto).")
+    parser.add_argument("--sem-politicas", action="store_true",
+        help="Ignora o arquivo de políticas confirmadas e usa só os dados brutos.")
     arguments = parser.parse_args()
     if not re.fullmatch(r"[0-9]{4}-(0[1-9]|1[0-2])", arguments.competencia):
         parser.error("Competência inválida: use AAAA-MM.")
@@ -47,11 +49,12 @@ def main() -> None:
         parser.error("--regerar grava referencias.json; use --referencias apontando para um arquivo com esse nome.")
     try:
         dataset = load_dataset(arguments.entrada)
-        from src.infrastructure.slack_inbox import find_inbox_file, parse_inbox
-        inbox_file = find_inbox_file(arguments.entrada, arguments.caixa_de_entrada)
-        inbox = parse_inbox(inbox_file) if inbox_file else None
-        if inbox:
-            applied.append(f"caixa de entrada do Slack ({inbox.source_file}): {len(inbox.bindings)} vínculos, {len(inbox.exemptions)} isenções")
+        policies = None
+        if not arguments.sem_politicas:
+            from src.infrastructure.slack_inbox import find_inbox_file, parse_inbox, default_inbox
+            inbox_file = find_inbox_file(arguments.entrada, arguments.caixa_de_entrada)
+            policies = parse_inbox(inbox_file) if inbox_file else default_inbox()
+            applied.append(f"políticas confirmadas ({policies.source_file}): {len(policies.bindings)} vínculos, {len(policies.exemptions)} isenções")
         if arguments.regerar:
             from src.application.normalization import normalize_reference
             from src.infrastructure.flow_log import FlowLog
@@ -59,7 +62,7 @@ def main() -> None:
 
             with FlowLog(contract_file.parent) as log:
                 interpreter = OpenAIInterpreter(arguments.env_file, contract_file.parent / "cache_llm", log=log)
-                normalize_reference(dataset, arguments.entrada, contract_file.parent, interpreter, log=log, inbox=inbox)
+                normalize_reference(dataset, arguments.entrada, contract_file.parent, interpreter, log=log, inbox=policies)
         bank_decisions = None
         if not arguments.sem_referencias:
             if bank_file.is_file():
@@ -81,21 +84,31 @@ def main() -> None:
                 from src.application.normalization import load_reference
 
                 try:
-                    dataset = load_reference(dataset, arguments.entrada, contract_file, inbox=inbox)
+                    dataset = load_reference(dataset, arguments.entrada, contract_file, inbox=policies)
                     applied.append(f"contratual: {contract_file}")
                 except ValueError as error:
                     if arguments.referencias:
                         raise
                     warnings.append(f"referência contratual {contract_file} NÃO aplicada ({error})")
+                    if policies is not None:
+                        from src.application.normalization import apply_inbox_policies
+                        dataset = apply_inbox_policies(dataset, policies)
             elif arguments.referencias:
                 raise ValueError(f"Referência contratual informada não existe: {contract_file}")
-        result = close_month(dataset, period, bank_decisions=bank_decisions)
+            elif policies is not None:
+                from src.application.normalization import apply_inbox_policies
+                dataset = apply_inbox_policies(dataset, policies)
+        elif policies is not None and not arguments.sem_politicas:
+            from src.application.normalization import apply_inbox_policies
+            dataset = apply_inbox_policies(dataset, policies)
+        result = close_month(dataset, period, bank_decisions=bank_decisions, policies=policies)
+        late_count = sum(1 for e in dataset.checkout if e.source.file.startswith("06_orbe"))
         export_csvs(result, arguments.saida)
     except DataPackError as error:
         parser.exit(2, f"Pacote inválido: {error}\n")
     except (ValueError, OSError) as error:
         parser.exit(2, f"Fechamento não concluído: {error}\n")
-    sys.stdout.write(render_summary(result, tuple(applied), tuple(warnings), str(arguments.saida)))
+    sys.stdout.write(render_summary(result, tuple(applied), tuple(warnings), str(arguments.saida), late_adjustments=late_count))
 
 
 if __name__ == "__main__":

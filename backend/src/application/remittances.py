@@ -8,9 +8,10 @@ from src.domain.closing import ClosingPart, Commission, Divergence, Invoice, Pen
 from src.domain.models import Dataset, RemittanceEntry
 from src.domain.policies import ZERO, contract_candidates, in_period, money, output_id, period_key
 from src.application.remittance_reconciliation import reconcile_remittance_resources
+from src.infrastructure.slack_inbox import SlackInbox
 
 
-def close_remittances(dataset: Dataset, period: date) -> ClosingPart:
+def close_remittances(dataset: Dataset, period: date, *, policies: SlackInbox | None = None) -> ClosingPart:
     groups: dict[str, list[RemittanceEntry]] = defaultdict(list)
     for entry in dataset.remittances:
         groups[entry.source.ref].append(entry)
@@ -40,6 +41,12 @@ def close_remittances(dataset: Dataset, period: date) -> ClosingPart:
         candidates = contract_candidates(dataset.contracts, entry.contracted_on, cnpj=entry.cnpj)
         contract = candidates[0] if len(candidates) == 1 else None
         rate = contract.remittance_rate if contract else None
+        rule_source = "planilha"
+        if rate is None and policies and policies.spreads:
+            policy_spread = policies.spreads.get(entry.cnpj) or policies.spreads.get(None)
+            if policy_spread:
+                rate = policy_spread.spread
+                rule_source = "política 07_/thread 6"
         if rate is None:
             pending.append(Pending(output_id("REMESSA_CONTRATO", period, operation), "CONTRATO_REMESSA_NAO_RESOLVIDO",
                 operation, None, "Contrato ausente/ambíguo ou spread vazio/padrão sem percentual explícito. "
@@ -51,8 +58,8 @@ def close_remittances(dataset: Dataset, period: date) -> ClosingPart:
                 identifier = output_id("REMESSA_DIVERGENCIA", period, operation)
                 divergences.append(Divergence(identifier, entry.cnpj, "REMESSA", operation,
                     rate * 100, entry.spread_rate * 100, difference))
-                rule = (f"Taxa Cliente {entry.customer_rate} difere de PTAX × (1 + spread da planilha) = {expected_rate} "
-                    "na precisão de 4 casas; valor = ME × PTAX × (aplicado − planilha).")
+                rule = (f"Taxa Cliente {entry.customer_rate} difere de PTAX × (1 + spread de {rule_source}) = {expected_rate} "
+                    f"na precisão de 4 casas; valor = ME × PTAX × (aplicado − {rule_source}).")
                 traces.append(trace(identifier, entry.source, difference, rule))
                 pending_id = output_id("REMESSA_REVISAR_DIFERENCA", period, operation)
                 pending.append(Pending(pending_id, "VALIDAR_DIVERGENCIA_REMESSA", operation, difference,
@@ -61,10 +68,22 @@ def close_remittances(dataset: Dataset, period: date) -> ClosingPart:
         if entry.spread < ZERO:
             identifier = output_id("REMESSA_NEGATIVO", period, operation)
             amount = money(entry.spread)
-            pending.append(Pending(identifier, "VALIDAR_SPREAD_NEGATIVO", operation, amount,
+            exclude_negative = bool(policies and policies.negative_spreads and policies.negative_spreads.excluir_comissao)
+            reason = (
+                policies.negative_spreads.reason
+                if exclude_negative else
                 "Spread negativo reportado. O pacote não determina exclusão, trava vencida ou obrigação de contestar. "
-                "Projeção aplica participação ao realizado assinado; validar efeito antes de faturar.", "Financeiro"))
-            traces.append(trace(identifier, entry.source, amount, "Spread negativo integral da fonte; política de tratamento ausente."))
+                "Projeção aplica participação ao realizado assinado; validar efeito antes de faturar."
+            )
+            rule = (
+                "Spread negativo de trava vencida excluído da comissão e da NF — Helena, thread 6."
+                if exclude_negative else
+                "Spread negativo integral da fonte; política de tratamento ausente."
+            )
+            pending.append(Pending(identifier, "VALIDAR_SPREAD_NEGATIVO", operation, amount, reason, "Financeiro"))
+            traces.append(trace(identifier, entry.source, amount, rule))
+            if exclude_negative:
+                continue
         if share is None or not ZERO <= share <= Decimal("1"):
             pending.append(Pending(output_id("REMESSA_PARTICIPACAO", period, operation), "PARTICIPACAO_NAO_DOCUMENTADA",
                 operation, None, "Percentual de participação não extraído inequivocamente do corpo do e-mail.", "Financeiro"))

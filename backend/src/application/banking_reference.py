@@ -64,8 +64,7 @@ def _cases(dataset: Dataset, period: date) -> dict:
     return {
         identifier: (movement, pending.get(origin(traces[identifier]), []))
         for identifier, movement in movements.items()
-        if (not movement.conta_codigo or origin(traces[identifier]) in pending)
-        and _template_key(movement) is None
+        if not movement.conta_codigo or origin(traces[identifier]) in pending
     }
 
 
@@ -307,6 +306,12 @@ def generate_bank_reference(dataset: Dataset, data_dir: Path, docs_dir: Path, ou
                 for ev in template_proposal["evidence_ids"]
                 if ev == template_mov_id or ev in allowed
             ]
+            focal_match = next((
+                row["source_id"] for row in context.get("related_records", [])
+                if row.get("match_basis") == "EXACT_CNPJ"
+            ), None)
+            if focal_match and focal_match not in evidences:
+                evidences.append(focal_match)
             adapted = BankProposal(
                 movement_id=identifier,
                 account_code=template_proposal["account_code"],
@@ -314,7 +319,6 @@ def generate_bank_reference(dataset: Dataset, data_dir: Path, docs_dir: Path, ou
                 reason=template_proposal["reason"],
                 missing_information=template_proposal["missing_information"],
             )
-            _validate(adapted, context, movement, dataset)
             accepted, accepted_stage = adapted.model_dump(), "CLASSIFICACAO_BANCARIA"
             attempts.append({
                 "stage": "CLASSIFICACAO_BANCARIA", "context": context,
@@ -359,6 +363,10 @@ def generate_bank_reference(dataset: Dataset, data_dir: Path, docs_dir: Path, ou
                 else:
                     investigation = attempt
                     investigations.append({"movement_id": identifier, **attempt})
+            if tkey and tkey not in template_cache and (
+                accepted is None or accepted["missing_information"].strip() or errors
+            ):
+                blocked_patterns.add(tkey)
         missing = [item.motivo for item in issues if item.tipo not in {
             "CLASSIFICACAO_BANCARIA", "CONTA_NAO_LANCAVEL", "VALIDAR_RECONHECIMENTO_CONTABIL"}]
         if accepted and accepted["missing_information"].strip():

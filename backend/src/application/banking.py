@@ -132,7 +132,7 @@ def classify_banks(dataset: Dataset, period: date, *,
                 code = ""
                 confidence = Decimal("0")
                 rule = issues[-1][1]
-            elif confidence < Decimal("1"):
+            elif confidence < Decimal("1") and methods.get(identifier) != "IA":
                 issues.append(("VALIDAR_RECONHECIMENTO_CONTABIL", rule))
         if proposed_code == "1.1.09.002":
             issues.append((

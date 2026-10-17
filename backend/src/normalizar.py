@@ -37,7 +37,7 @@ def main() -> None:
             dataset = load_dataset(args.entrada)
             log.event("INGESTAO", "LEITURA_PACOTE_CONCLUIDA", checkout_rows=len(dataset.checkout),
                 contract_rows=len(dataset.contracts))
-            inbox_file = find_inbox_file(args.entrada, args.caixa_de_entrada)
+            inbox_file = find_inbox_file(explicit_path=args.caixa_de_entrada) if args.caixa_de_entrada else None
             inbox = parse_inbox(inbox_file) if inbox_file else None
             if inbox:
                 log.event("CONFIGURACAO", "CAIXA_DE_ENTRADA_CARREGADA",
