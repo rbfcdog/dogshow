@@ -955,12 +955,23 @@ def _check_reference_pipeline() -> None:
 
 def _check_email_evidence() -> None:
     data_dir = Path(__file__).resolve().parents[2] / "dados_tarvo"
+    dataset = load_dataset(data_dir)
+    rows = contract_rows(data_dir, dataset)
     chunks = email_chunks(data_dir)
     assert chunks
     assert any(c["source_id"].endswith(":headers") and "relatorios@pontecambio.com.br" in c["text"] for c in chunks)
     assert any("50%" in c["text"] and "spread" in c["text"] for c in chunks)
     assert any("75.374.179/0001-46" in c["text"] for c in chunks)
 
+    kiwi = next(r for r in rows if not r["historical"] and r["cnpj"] == "07752116000126")
+    ctx = context_for(kiwi, rows, dataset, 75, 2, 8)
+    assert ctx["partner_email"]["partner_cnpj"] == "75374179000146"
+    assert any(g["cnpj"] == "07752116000126" and "KIWI EXPERIENCE TURI" in g["names"] for g in ctx["remittance_groups"])
+    assert ctx["bank_mentions"]
+    remit_sample = ctx["remittance_groups"][0]["samples"][0]["source_id"]
+    assert "spread_rate" not in ctx["remittance_groups"][0]["samples"][0]
+    proposal = _proposal_for_row(kiwi, evidence=(remit_sample, ctx["partner_email"]["source_id"], ctx["bank_mentions"][0]["source_id"]))
+    validate_proposal(proposal, ctx, rows)
 
 def check() -> None:
     _check_schemas()

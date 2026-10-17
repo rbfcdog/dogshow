@@ -112,6 +112,98 @@ def orbe_candidates(focal: dict, dataset: Dataset, threshold: float, sample_limi
     return selected
 
 
+def remittance_candidates(
+    focal: dict, dataset: Dataset, threshold: float, sample_limit: int,
+    related: list[dict] | None = None,
+) -> list[dict]:
+    if not dataset.remittances:
+        return []
+    target_cnpjs = ({focal.get("cnpj") or ""} | {r.get("cnpj") or "" for r in (related or [])}) - {""}
+    target_names = ({focal.get("merchant") or ""} | {r.get("merchant") or "" for r in (related or [])}) - {""}
+    groups: dict[str, list] = {}
+    for entry in dataset.remittances:
+        groups.setdefault(entry.cnpj, []).append(entry)
+    selected = []
+    for cnpj, entries in sorted(groups.items()):
+        exact = cnpj in target_cnpjs
+        score = max(
+            (similarity(name, entry.merchant) for name in target_names for entry in entries),
+            default=0.0,
+        )
+        if not exact and score < threshold:
+            continue
+        ordered = sorted(entries, key=lambda e: (e.contracted_on, e.source.ref, e.source.row or 0))
+        samples = [
+            {
+                "source_id": f"{e.source.file}!{e.source.sheet or 'Operações'}:L{e.source.row}",
+                "ref": e.source.ref,
+                "contracted_on": e.contracted_on,
+                "settled_on": e.settled_on,
+                "cnpj": e.cnpj,
+                "merchant": e.merchant,
+                "currency": e.currency,
+                "status": e.status,
+                "note": e.note,
+            }
+            for e in ordered[:sample_limit]
+        ]
+        selected.append({
+            "cnpj": cnpj,
+            "names": sorted({e.merchant for e in entries}),
+            "name_score": round(score, 2),
+            "exact_cnpj": exact,
+            "total_rows": len(entries),
+            "statuses": sorted({e.status for e in entries}),
+            "notes": sorted({e.note for e in entries if e.note}),
+            "samples": samples,
+        })
+    return selected
+
+
+def partner_email_evidence(dataset: Dataset) -> dict | None:
+    terms = dataset.partner_terms
+    if terms is None:
+        return None
+    return {
+        "source_id": f"{terms.source.file}:{terms.source.ref}:L1-L12",
+        "file": terms.source.file,
+        "partner_name": terms.name,
+        "partner_cnpj": terms.cnpj,
+        "spread_participation_fraction": terms.participation,
+    }
+
+
+def bank_candidates(
+    focal: dict, dataset: Dataset, threshold: float, sample_limit: int,
+    related: list[dict] | None = None,
+) -> list[dict]:
+    if not dataset.banks:
+        return []
+    target_cnpjs = ({focal.get("cnpj") or ""} | {r.get("cnpj") or "" for r in (related or [])}) - {""}
+    target_names = ({focal.get("merchant") or ""} | {r.get("merchant") or "" for r in (related or [])}) - {""}
+    matched = []
+    for entry in dataset.banks:
+        digits = re.sub(r"\D", "", entry.description)
+        exact_cnpj = any(cnpj in digits for cnpj in target_cnpjs)
+        cleaned = re.sub(r"^(?:pix\s+receb(?:ido|ida)?|pix\s+enviado|devolucao\s+pix)\s+", "", normalize_name(entry.description))
+        score = max((similarity(name, cleaned) for name in target_names), default=0.0) if cleaned else 0.0
+        if not exact_cnpj and score < threshold:
+            continue
+        source_id = f"{entry.source.file}:L{entry.source.row}" if entry.source.row else f"{entry.source.file}:{entry.source.ref}"
+        matched.append((
+            not exact_cnpj, -score, entry.occurred_on, source_id,
+            {
+                "source_id": source_id,
+                "ref": entry.source.ref,
+                "bank": entry.bank,
+                "occurred_on": entry.occurred_on,
+                "description": entry.description,
+                "name_score": round(score, 2),
+            },
+        ))
+    return [item[-1] for item in sorted(matched)[:sample_limit]]
+
+
 def document_chunks(data_dir: Path) -> list[dict]:
     require_data_dir(data_dir)
     chunks = []
@@ -207,7 +299,7 @@ def retrieve_documents(chunks: list[dict], focal: dict, ec: str, limit: int = 24
         score = sum(5 for term in terms if term in plain or term in digits)
 
         if score:
-            ranked.append((-score, chunk["source_id"], chunk))
+            ranked.append((not chunk["file"].startswith("06_"), -score, chunk["source_id"], chunk))
     return [item[-1] for item in sorted(ranked)[:limit]]
 
 

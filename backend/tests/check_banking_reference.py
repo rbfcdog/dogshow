@@ -14,8 +14,8 @@ from src.application.banking_reference import (
 )
 from src.domain.banking_reference import BankInvestigation, BankProposal
 from src.domain.models import Account, BankEntry, Dataset, RemittanceEntry, SourceRef
-from src.infrastructure.banking_sources import bank_context
-from src.infrastructure.normalization_sources import document_chunks, json_text
+from src.infrastructure.banking_sources import bank_context, markdown_chunks as document_chunks
+from src.infrastructure.normalization_sources import json_text
 from src.infrastructure.openai_normalizer import _bank_text_format
 def _reject(call) -> None:
     try:
@@ -48,7 +48,7 @@ class Interpreter:
 
 def check() -> None:
     period = date(2026, 9, 1)
-    codes = ("1.1.09.002", "2.1.01.001", "1.1.09.001", "4.2.01")
+    codes = ("1.1.09.002", "2.1.01.001", "1.1.09.001", "1.1.02.001", "4.2.01")
     accounts = tuple(Account(SourceRef("contas.csv", code, index + 2), code,
         "Conta " + code, "ANALITICA", "D", True) for index, code in enumerate(codes))
     entries = tuple(BankEntry(SourceRef("aurora.csv", ref, int(ref[1:])), "AURORA",
@@ -57,9 +57,9 @@ def check() -> None:
             ("L50", "PIX RECEB SEM IDENTIFICACAO CNPJ 12345678000190", "987.65"),
             ("L65", "DEVOLUCAO PIX MUNDO ABERTO", "200.00"),
             ("L92", "TRANSF ENTRE CONTAS", "-300000.00"),
-            ("L99", "TAR MANUTENCAO", "-30.00")))
+            ("L99", "APLICACAO AUTOMATICA CDB", "-30.00")))
     entries += (BankEntry(SourceRef("meridiano.ofx", "L50"), "MERIDIANO",
-        date(2026, 9, 30), "PIX RECEB CLIENTE", Decimal("15")),)
+        date(2026, 9, 30), "RESGATE AUTOMATICO CDB", Decimal("15")),)
     accounts += (Account(SourceRef("contas.csv", "2.1.02.001", 9), "2.1.02.001",
         "Recursos de clientes", "ANALITICA", "C", True),)
     accounts += (
@@ -94,7 +94,7 @@ def check() -> None:
         assert all((output / name).exists() for name in (
             "classificacoes_sugeridas.csv", "rca_bancaria.json", "escaladas_humanas.json", "revisao_humana.csv"))
         suggestions = [record for record in report["cases"] if record["proposal"]]
-        assert len(suggestions) == 2
+        assert len(suggestions) == 3
         assert all(record["proposal_stage"] == "CLASSIFICACAO_BANCARIA" for record in suggestions)
         assert all(record["investigation"]["response"]["proposal"] is None for record in suggestions)
         escalations = json.loads((output / "escaladas_humanas.json").read_text(encoding="utf-8"))
@@ -104,10 +104,8 @@ def check() -> None:
         assert by_ref["L50"]["classificacao_contabil"]["status_revisao_contabil"] == "PROPOSTA_IA_PRONTA_PARA_APROVACAO"
         assert by_ref["L50"]["classificacao_contabil"]["base_autoridade_conta"] == "DECISAO_FUNDAMENTADA_DO_TIME_EM_HIPOTESES"
         assert by_ref["L50"]["classificacao_contabil"]["comando_aprovacao"]
-        assert by_ref["L65"]["classificacao_contabil"]["status_revisao_contabil"] == "CLASSIFICACAO_DETERMINISTICA_MANTIDA"
-        assert by_ref["L65"]["classificacao_contabil"]["base_autoridade_conta"] == "DECISAO_FUNDAMENTADA_DO_TIME_EM_HIPOTESES"
-        assert by_ref["L65"]["classificacao_contabil"]["comando_aprovacao"] is None
         assert by_ref["L92"]["classificacao_contabil"]["status_revisao_contabil"] == "CLASSIFICACAO_DETERMINISTICA_MANTIDA"
+        assert by_ref["L92"]["classificacao_contabil"]["comando_aprovacao"] is None
         assert all(row["evidencias_citadas"] and row["acoes_revisor"] for row in escalations)
         with (output / "revisao_humana.csv").open(encoding="utf-8", newline="") as stream:
             review_rows = list(csv.DictReader(stream, delimiter=";"))

@@ -3,13 +3,13 @@ from collections import defaultdict
 from dataclasses import asdict, fields
 from datetime import timedelta
 from decimal import Decimal
+from pathlib import Path
 
 from src.domain.closing import ClassifiedMovement, Pending
 from src.domain.models import BankEntry, Dataset, RemittanceEntry, SourceRef
 from src.domain.policies import money, output_id
-from src.infrastructure.normalization_sources import normalize_name
+from src.infrastructure.normalization_sources import digest, normalize_name
 from src.infrastructure.parsing import cnpj
-
 _CNPJ = re.compile(r"(?<![0-9])(?:[0-9]{2}\.[0-9]{3}\.[0-9]{3}/[0-9]{4}-[0-9]{2}|[0-9]{14})(?![0-9])")
 _GENERIC = {
     "a", "as", "com", "da", "das", "de", "do", "dos", "e", "em", "o", "os", "para", "por",
@@ -28,6 +28,29 @@ def _source_id(source: SourceRef) -> str:
     if source.row is not None:
         parts.append(f"L{source.row}")
     return "!".join(parts)
+
+
+def markdown_chunks(docs_dir: Path) -> list[dict]:
+    chunks = []
+    if not docs_dir.exists():
+        return chunks
+    for path in sorted(docs_dir.glob("*.md")):
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
+        for start in range(0, len(lines), 12):
+            chunks.append({
+                "source_id": f"{path.name}:L{start + 1}-L{min(start + 12, len(lines))}",
+                "file": path.name,
+                "text": "\n".join(lines[start:start + 12]),
+            })
+    return chunks
+
+
+def bank_manifest(data_dir: Path, docs_dir: Path) -> dict[str, str]:
+    files = sorted(p for p in data_dir.iterdir() if p.is_file())
+    documents = sorted(docs_dir.glob("*.md")) if docs_dir.exists() else []
+    return {f"dados/{p.name}": digest(p.read_bytes()) for p in files} | {
+        f"docs/{p.name}": digest(p.read_bytes()) for p in documents
+    }
 
 
 def _cnpjs(value: str, source: SourceRef) -> set[str]:
@@ -63,7 +86,7 @@ def _annotate_chunks(chunks: list[dict]) -> list[dict]:
                     section = line.lstrip("#").strip()
             plain_text = normalize_name(chunk["text"])
             plain_section = normalize_name(chunk_section)
-            if "sem resposta da helena" in plain_section or file_name.startswith("PERGUNTA_"):
+            if file_name.startswith("PERGUNTA_"):
                 authority = "PERGUNTA_PARTICIPANTE_SEM_CONFIRMACAO"
             elif (
                 "nao viraram confirmacao" in plain_section
@@ -72,8 +95,7 @@ def _annotate_chunks(chunks: list[dict]) -> list[dict]:
             ):
                 authority = "PREMISSA_DO_TIME"
             elif (
-                "helena financeiro da tarvo" in plain_text
-                or "fatos e criterios confirmados" in plain_section
+                "fatos e criterios confirmados" in plain_section
                 or "confirmado pelo financeiro" in plain_section
             ):
                 authority = "FINANCEIRO_CONFIRMADO"

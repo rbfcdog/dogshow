@@ -60,7 +60,7 @@ def reconcile_remittance_resources(
     def incomplete(scope: str, reference: str, reason: str) -> None:
         pending.append(Pending(
             output_id(incomplete_kind, period, "MERIDIANO", scope),
-            incomplete_kind, reference, None, reason, "Helena / Ponte Câmbio",
+            incomplete_kind, reference, None, reason, "Financeiro / Ponte Câmbio",
         ))
 
     def difference(
@@ -77,7 +77,7 @@ def reconcile_remittance_resources(
             f"{reason} Referências: {locations}. Conferência investigativa de fluxos, sem alterar "
             "cadastro, comissão, NF ou classificação bancária. Não somar diferenças diárias e mensais "
             "como exposição: podem refletir os mesmos fluxos.",
-            "Helena / Ponte Câmbio",
+            "Financeiro / Ponte Câmbio",
         ))
         traces.extend(trace(identifier, source, value, rule) for source, value, rule in ordered)
 
@@ -155,7 +155,7 @@ def reconcile_remittance_resources(
                 "não altera cadastro, comissão, NF ou classificação bancária. Conferência mensal suspensa "
                 "para evitar diferenças falsas."
             )
-            pending.append(Pending(identifier, kind, entry.source.ref, amount, reason, "Helena / Ponte Câmbio"))
+            pending.append(Pending(identifier, kind, entry.source.ref, amount, reason, "Financeiro / Ponte Câmbio"))
             traces.append(trace(identifier, entry.source, amount, reason))
             unresolved.append(entry)
         else:

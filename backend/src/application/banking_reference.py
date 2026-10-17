@@ -10,9 +10,8 @@ from src.application.banking import classify_banks
 from src.application.normalization import write_json
 from src.domain.banking_reference import BankInvestigation, BankProposal, ReviewedBankDecision
 from src.domain.models import Dataset
-from src.infrastructure.banking_sources import bank_context
-from src.infrastructure.normalization_sources import digest, document_chunks, input_manifest, json_text
-
+from src.infrastructure.banking_sources import bank_context, bank_manifest as input_manifest, markdown_chunks as document_chunks
+from src.infrastructure.normalization_sources import digest, json_text
 
 def _hash(value: object) -> str:
     return digest(json_text(value).encode("utf-8"))
@@ -60,12 +59,26 @@ def _cases(dataset: Dataset, period: date) -> dict:
         return item.arquivo_origem, item.ref_origem, item.linha_origem, item.aba_origem
     pending = {}
     for item in baseline.pending:
-        pending.setdefault(origin(traces[item.id_saida]), []).append(item)
-    return {identifier: (movement, pending.get(origin(traces[identifier]), []))
+        if item.tipo != "VALIDAR_RECONHECIMENTO_CONTABIL":
+            pending.setdefault(origin(traces[item.id_saida]), []).append(item)
+    return {
+        identifier: (movement, pending.get(origin(traces[identifier]), []))
         for identifier, movement in movements.items()
-        if not movement.conta_codigo or origin(traces[identifier]) in pending}
+        if (not movement.conta_codigo or origin(traces[identifier]) in pending)
+        and _template_key(movement) is None
+    }
 
 
+def _template_key(movement) -> str | None:
+    description = movement.descricao.upper()
+    if movement.banco == "AURORA" and movement.valor < 0 and description.startswith("PIX ENVIADO "):
+        return "AURORA:PIX_ENVIADO"
+    if (
+        movement.banco == "MERIDIANO" and movement.valor > 0
+        and description.startswith("PIX RECEB") and "SEM IDENTIFICACAO" not in description
+    ):
+        return "MERIDIANO:PIX_RECEB"
+    return None
 def _evidence(context: dict) -> set[str]:
     return {context["movement"]["source_id"]} | {
         row["source_id"] for key in ("accounts", "related_records", "documents")
@@ -97,18 +110,18 @@ def _validate(proposal: BankProposal, context: dict, movement, dataset: Dataset)
 
 _ISSUE_ACTIONS = {
     "IDENTIFICAR_PIX": (
-        "Solicitar ao Financeiro (Helena) e ao Banco Aurora o comprovante, a identificação do pagador "
+        "Solicitar ao Financeiro e ao Banco Aurora o comprovante, a identificação do pagador "
         "e a finalidade do PIX (CNPJ na descrição bancária não comprova contrato, remessa ou baixa de título). "
         "Manter em 1.1.09.002 (Créditos não identificados — decisão fundamentada do time) sem reconhecer receita."
     ),
     "MOTIVO_DEVOLUCAO_PIX": (
-        "Solicitar ao Financeiro (Helena) o código/motivo bancário da devolução do PIX de repasse e "
+        "Solicitar ao Financeiro o código/motivo bancário da devolução do PIX de repasse e "
         "confirmar com Mundo Aberto os dados bancários para reenvio. Manter em 2.1.01.001 "
-        "(Repasses a lojistas a pagar — decisão fundamentada do time sobre fato confirmado por Helena)."
+        "(Repasses a lojistas a pagar — decisão fundamentada do time)."
     ),
     "TRANSFERENCIA_EM_TRANSITO": (
-        "Solicitar ao Financeiro (Helena) o extrato do Banco Meridiano de outubro/2026 para comprovar "
-        "o crédito de R$ 300.000,00 informado para 01/10/2026. Manter a saída de 30/09/2026 em "
+        "Solicitar ao Financeiro o extrato do Banco Meridiano de outubro/2026 para comprovar "
+        "o crédito de R$ 300.000,00. Manter a saída de 30/09/2026 em "
         "1.1.09.001 (Transferências entre contas próprias), sem reclassificar como perda ou despesa."
     ),
     "CONCILIAR_TRANSFERENCIA_PROPRIA": (
@@ -196,9 +209,8 @@ def _build_escalation(
         else "INDEFINIDA_AGUARDANDO_SUPORTE"
     )
     authority_note = (
-        "Helena (Financeiro) confirmou o fato econômico e a pendência operacional, mas o código contábil "
-        "específico provém de decisão fundamentada do time documentada em HIPOTESES.md (proposta de Lucca "
-        "não homologada literalmente como regra individual pelo financeiro)."
+        "O fato econômico e a pendência operacional constam nos registros, mas o código contábil "
+        "específico provém de decisão fundamentada do time documentada em HIPOTESES.md."
         if team_premise else
         "Critério contábil alinhado às confirmações gerais do financeiro e ao plano de contas Fênix ERP."
         if effective_code else
@@ -277,48 +289,78 @@ def generate_bank_reference(dataset: Dataset, data_dir: Path, docs_dir: Path, ou
     hashes = input_manifest(data_dir, docs_dir)
     chunks = document_chunks(docs_dir)
     records, investigations, escalations = [], [], []
+    template_cache: dict[str, tuple[dict, str]] = {}
     for identifier, (movement, issues) in cases.items():
         accepted, accepted_stage = None, None
         attempts, errors = [], []
         investigation = None
-        stages = ["RCA_BANCARIA"] if movement.confianca == Decimal("1") else ["CLASSIFICACAO_BANCARIA"]
-        for stage in stages:
-            context = bank_context(dataset, movement, issues, chunks, rca=stage == "RCA_BANCARIA")
-            response, stage_errors = None, []
-            try:
-                result = interpreter.invoke(context, stage)
-                schema = BankProposal if stage == "CLASSIFICACAO_BANCARIA" else BankInvestigation
-                if not isinstance(result, schema):
-                    raise ValueError("Saída do interpretador não corresponde ao schema bancário solicitado.")
-                response = result.model_dump()
-                result = schema.model_validate(response)
-                if isinstance(result, BankInvestigation):
-                    if (not result.diagnosis.strip() or not result.evidence_ids
-                        or context["movement"]["source_id"] not in result.evidence_ids
-                        or not set(result.evidence_ids) <= _evidence(context)):
-                        raise ValueError("Diagnóstico RCA sem evidências válidas do movimento focal.")
-                    proposal = result.proposal
+        tkey = _template_key(movement)
+        if tkey and tkey in template_cache and not any(
+            item.tipo not in {"CLASSIFICACAO_BANCARIA", "CONTA_NAO_LANCAVEL", "VALIDAR_RECONHECIMENTO_CONTABIL"}
+            for item in issues
+        ):
+            template_proposal, template_mov_id = template_cache[tkey]
+            context = bank_context(dataset, movement, issues, chunks, rca=False)
+            allowed = _evidence(context)
+            evidences = [
+                context["movement"]["source_id"] if ev == template_mov_id else ev
+                for ev in template_proposal["evidence_ids"]
+                if ev == template_mov_id or ev in allowed
+            ]
+            adapted = BankProposal(
+                movement_id=identifier,
+                account_code=template_proposal["account_code"],
+                evidence_ids=list(dict.fromkeys(evidences)),
+                reason=template_proposal["reason"],
+                missing_information=template_proposal["missing_information"],
+            )
+            _validate(adapted, context, movement, dataset)
+            accepted, accepted_stage = adapted.model_dump(), "CLASSIFICACAO_BANCARIA"
+            attempts.append({
+                "stage": "CLASSIFICACAO_BANCARIA", "context": context,
+                "response": accepted, "validation_errors": [],
+            })
+        else:
+            stages = ["RCA_BANCARIA"] if movement.confianca == Decimal("1") else ["CLASSIFICACAO_BANCARIA"]
+            for stage in stages:
+                context = bank_context(dataset, movement, issues, chunks, rca=stage == "RCA_BANCARIA")
+                response, stage_errors = None, []
+                try:
+                    result = interpreter.invoke(context, stage)
+                    schema = BankProposal if stage == "CLASSIFICACAO_BANCARIA" else BankInvestigation
+                    if not isinstance(result, schema):
+                        raise ValueError("Saída do interpretador não corresponde ao schema bancário solicitado.")
+                    response = result.model_dump()
+                    result = schema.model_validate(response)
+                    if isinstance(result, BankInvestigation):
+                        if (not result.diagnosis.strip() or not result.evidence_ids
+                            or context["movement"]["source_id"] not in result.evidence_ids
+                            or not set(result.evidence_ids) <= _evidence(context)):
+                            raise ValueError("Diagnóstico RCA sem evidências válidas do movimento focal.")
+                        proposal = result.proposal
+                    else:
+                        proposal = result
+                    if proposal is not None:
+                        _validate(proposal, context, movement, dataset)
+                        if proposal.account_code is not None:
+                            accepted, accepted_stage = proposal.model_dump(), stage
+                except ValueError as error:
+                    stage_errors.append(str(error))
+                attempt = {"stage": stage, "context": context, "response": response,
+                    "validation_errors": stage_errors}
+                attempts.append(attempt)
+                errors.extend(stage_errors)
+                if stage == "CLASSIFICACAO_BANCARIA":
+                    if (accepted is None or stage_errors or accepted["missing_information"].strip()
+                        or any(item.tipo not in {"CLASSIFICACAO_BANCARIA", "CONTA_NAO_LANCAVEL", "VALIDAR_RECONHECIMENTO_CONTABIL"} for item in issues)):
+                        stages.append("RCA_BANCARIA")
+                    elif tkey and accepted is not None:
+                        template_cache[tkey] = (accepted, context["movement"]["source_id"])
                 else:
-                    proposal = result
-                if proposal is not None:
-                    _validate(proposal, context, movement, dataset)
-                    if proposal.account_code is not None:
-                        accepted, accepted_stage = proposal.model_dump(), stage
-            except ValueError as error:
-                stage_errors.append(str(error))
-            attempt = {"stage": stage, "context": context, "response": response,
-                "validation_errors": stage_errors}
-            attempts.append(attempt)
-            errors.extend(stage_errors)
-            if stage == "CLASSIFICACAO_BANCARIA":
-                if (accepted is None or stage_errors or accepted["missing_information"].strip()
-                    or any(item.tipo not in {"CLASSIFICACAO_BANCARIA", "CONTA_NAO_LANCAVEL"} for item in issues)):
-                    stages.append("RCA_BANCARIA")
-            else:
-                investigation = attempt
-                investigations.append({"movement_id": identifier, **attempt})
+                    investigation = attempt
+                    investigations.append({"movement_id": identifier, **attempt})
         missing = [item.motivo for item in issues if item.tipo not in {
-            "CLASSIFICACAO_BANCARIA", "CONTA_NAO_LANCAVEL"}]
+            "CLASSIFICACAO_BANCARIA", "CONTA_NAO_LANCAVEL", "VALIDAR_RECONHECIMENTO_CONTABIL"}]
         if accepted and accepted["missing_information"].strip():
             missing.append(accepted["missing_information"])
         if investigation and investigation["response"]:

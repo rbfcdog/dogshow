@@ -2,14 +2,12 @@ from collections import defaultdict
 from dataclasses import fields
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
-
-# Taxas de câmbio (PTAX/Taxa Cliente) têm 4 casas; a planilha grava float e corta zeros à direita,
-# então a precisão não pode ser lida do expoente do Decimal.
 RATE_PRECISION = Decimal("0.0001")
 
 from src.domain.closing import ClosingPart, Commission, Divergence, Invoice, Pending, trace
 from src.domain.models import Dataset, RemittanceEntry
 from src.domain.policies import ZERO, contract_candidates, in_period, money, output_id, period_key
+from src.application.remittance_reconciliation import reconcile_remittance_resources
 
 
 def close_remittances(dataset: Dataset, period: date) -> ClosingPart:
@@ -19,6 +17,7 @@ def close_remittances(dataset: Dataset, period: date) -> ClosingPart:
     economic_fields = tuple(field.name for field in fields(RemittanceEntry) if field.name not in {"source", "note"})
     contributions: dict[str, list[tuple[RemittanceEntry, Decimal]]] = defaultdict(list)
     names, divergences, pending, traces = {}, [], [], []
+    operations: list[RemittanceEntry] = []
     terms = dataset.partner_terms
     share = terms.participation if terms else None
     for operation, occurrences in sorted(groups.items()):
@@ -30,6 +29,7 @@ def close_remittances(dataset: Dataset, period: date) -> ClosingPart:
             pending.append(Pending(output_id("REMESSA_CONFLITO", period, operation), "CONFLITO_OPERACAO_REMESSA",
                 operation, None, "Ocorrências econômicas conflitantes: não há evidência para selecionar uma versão.", "Financeiro / Parceiro de câmbio"))
             continue
+        operations.append(entry)
         for index, repeated in enumerate(occurrences[1:], 1):
             identifier = output_id("REMESSA_DUPLICADA", period, operation, str(index))
             amount = money(repeated.spread)
@@ -90,5 +90,8 @@ def close_remittances(dataset: Dataset, period: date) -> ClosingPart:
         else:
             pending.append(Pending(output_id("REMESSA_TOMADOR", period), "VALIDAR_NOTA_REMESSA", first.source.ref,
                 None, "Tomador fiscal não extraído inequivocamente do e-mail ou saldo não positivo.", "Financeiro"))
+    resources = reconcile_remittance_resources(dataset, period, tuple(operations))
+    pending.extend(resources.pending)
+    traces.extend(resources.traces)
     return ClosingPart(commissions=tuple(commissions), divergences=tuple(divergences), invoices=tuple(invoices),
         pending=tuple(pending), traces=tuple(traces))

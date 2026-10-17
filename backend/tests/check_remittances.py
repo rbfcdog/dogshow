@@ -117,6 +117,7 @@ def check() -> None:
     assert _kinds(result) == {
         "VALIDAR_DIVERGENCIA_REMESSA": 2, "CONTRATO_REMESSA_NAO_RESOLVIDO": 1,
         "VALIDAR_SPREAD_NEGATIVO": 1, "CORRIGIR_RELATORIO_PONTE": 1, "CONFLITO_OPERACAO_REMESSA": 1,
+        "CONFERENCIA_RECURSOS_REMESSA_INCOMPLETA": 1,
     }
     assert not {"CONTESTAR_REMESSA_PONTE", "CONFERIR_REPASSE_FUTURO_PONTE"} & set(_kinds(result))
 
@@ -174,6 +175,7 @@ def check() -> None:
     assert only_negative.invoices == ()
     assert _kinds(only_negative) == {
         "VALIDAR_DIVERGENCIA_REMESSA": 1, "VALIDAR_SPREAD_NEGATIVO": 1, "VALIDAR_NOTA_REMESSA": 1,
+        "CONFERENCIA_RECURSOS_REMESSA_INCOMPLETA": 1,
     }
     _assert_traces(only_negative)
 
@@ -184,7 +186,7 @@ def check() -> None:
         assert unresolved_result.commissions[0].comissao_brl == Decimal("131.01")
         assert unresolved_result.commissions[0].lojista == base.merchant
         assert unresolved_result.invoices[0].valor_brl == Decimal("131.01") and unresolved_result.divergences == ()
-        assert _kinds(unresolved_result) == {"CONTRATO_REMESSA_NAO_RESOLVIDO": 1}
+        assert _kinds(unresolved_result) == {"CONTRATO_REMESSA_NAO_RESOLVIDO": 1, "CONFERENCIA_RECURSOS_REMESSA_INCOMPLETA": 1}
     inactive = replace(mundo, note="INATIVO")
     undated = replace(mundo, validity=None)
     before = replace(mundo, validity="até 30/06/2026")
@@ -195,7 +197,7 @@ def check() -> None:
     assert [row.taxa_contratada_pct for row in current.divergences] == [Decimal("1.200")]
     no_current = close_remittances(replace(dataset, contracts=(inactive, undated, before, future),
         remittances=(base,)), period)
-    assert no_current.divergences == () and _kinds(no_current) == {"CONTRATO_REMESSA_NAO_RESOLVIDO": 1}
+    assert no_current.divergences == () and _kinds(no_current) == {"CONTRATO_REMESSA_NAO_RESOLVIDO": 1, "CONFERENCIA_RECURSOS_REMESSA_INCOMPLETA": 1}
 
 
 if __name__ == "__main__":

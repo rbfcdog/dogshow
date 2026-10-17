@@ -36,7 +36,7 @@ def _assert_pending(
     assert len(rows) == 1, (kind, ref, rows)
     pending = rows[0]
     assert pending.valor_brl == amount
-    assert pending.quem_decide == "Helena / Ponte Câmbio"
+    assert pending.quem_decide == "Financeiro / Ponte Câmbio"
     traces = [row for row in result.traces if row.id_saida == pending.id_saida]
     assert len(traces) == len(contributions)
     assert {

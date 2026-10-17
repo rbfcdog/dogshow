@@ -14,8 +14,9 @@ from src.domain.policies import contract_candidates
 from src.infrastructure.flow_log import FlowLog
 from src.infrastructure.source_scope import SOURCE_SCOPE
 from src.infrastructure.normalization_sources import (
-    contract_id, contract_rows, document_chunks, email_chunks, input_manifest, json_text,
-    orbe_candidates, related_rows, retrieve_documents,
+    bank_candidates, contract_id, contract_rows, document_chunks, email_chunks, input_manifest,
+    json_text, orbe_candidates, partner_email_evidence, related_rows, remittance_candidates,
+    retrieve_documents,
 )
 
 
@@ -36,7 +37,6 @@ def explicit_bounds(validity: str | None) -> tuple[date | None, date | None]:
 
 def context_for(
     focal: dict, rows: list[dict], dataset: Dataset, threshold: float, samples: int, limit: int,
-    chunks: list[dict] | None = None,
 ) -> dict:
     candidates = related_rows(focal, rows, threshold, limit)
     candidates = [focal] + [r for r in candidates if r["source_id"] != focal["source_id"]][:limit - 1]
@@ -44,27 +44,38 @@ def context_for(
         "source_scope": SOURCE_SCOPE,
         "focal": focal, "related_contracts": candidates,
         "orbe_groups": orbe_candidates(focal, dataset, threshold, samples),
+        "remittance_groups": remittance_candidates(focal, dataset, threshold, samples, candidates),
+        "partner_email": partner_email_evidence(dataset),
+        "bank_mentions": bank_candidates(focal, dataset, threshold, samples, candidates),
         "selection": {"fuzzy_threshold": threshold, "samples_per_ec": samples,
             "max_related_contracts": limit, "orbe_has_cnpj_column": False},
     }
-    if chunks:
-        docs = retrieve_documents(chunks, focal, focal.get("establishment_code") or "")
-        emails = [c for c in chunks if c["file"].endswith(".eml")]
-        if emails and not any(d["file"].endswith(".eml") for d in docs):
-            docs = docs + emails[:4]
-        context["documents"] = docs
-        context["searched_documents"] = sorted({c["file"] for c in chunks})
-    return context
 
 
 def evidence_ids(context: dict) -> set[str]:
     samples = [sample for group in context["orbe_groups"] for sample in group["samples"]]
-    return {context["focal"]["source_id"]} | {row["source_id"] for row in context["related_contracts"]} | {
-        row["source_id"] for row in context.get("documents", [])
-    } | {sample["source"]["ref"] for sample in samples} | {
-        f"{sample['source']['file']}!{sample['source']['ref']}!row{sample['source']['row']}" for sample in samples
+    remittance_samples = [
+        sample for group in context.get("remittance_groups", []) for sample in group.get("samples", [])
+    ]
+    partner = context.get("partner_email")
+    partner_ids = {partner["source_id"], partner["file"]} if isinstance(partner, dict) and "source_id" in partner else set()
+    bank_ids = {
+        identifier for item in context.get("bank_mentions", [])
+        for identifier in (item.get("source_id"), item.get("ref")) if identifier
     }
-
+    return (
+        {context["focal"]["source_id"]}
+        | {row["source_id"] for row in context["related_contracts"]}
+        | {row["source_id"] for row in context.get("documents", [])}
+        | {sample["source"]["ref"] for sample in samples}
+        | {f"{sample['source']['file']}:{sample['source']['ref']}" for sample in samples}
+        | {f"{sample['source']['file']}:L{sample['source']['row']}" for sample in samples}
+        | {f"{sample['source']['file']}!{sample['source']['ref']}!row{sample['source']['row']}" for sample in samples}
+        | {sample["source_id"] for sample in remittance_samples}
+        | {sample["ref"] for sample in remittance_samples}
+        | partner_ids
+        | bank_ids
+    )
 
 def proposal_date(value: str | None) -> date | None:
     if value is None:
@@ -267,6 +278,9 @@ def _normalize_reference(dataset: Dataset, data_dir: Path, output_dir: Path,
             "source_scope": SOURCE_SCOPE,
             "focal": focal, "failures": problems, "related_contracts": candidates,
             "orbe_groups": orbe_candidates(focal, dataset, threshold, samples),
+            "remittance_groups": remittance_candidates(focal, dataset, threshold, samples, candidates),
+            "partner_email": partner_email_evidence(dataset),
+            "bank_mentions": bank_candidates(focal, dataset, threshold, samples, candidates),
             "documents": retrieve_documents(chunks, focal, ec),
             "searched_documents": sorted({c["file"] for c in chunks}),
             "normalization_attempts": [n for n in normalizations if n["source_id"] in {r["source_id"] for r in candidates}],
@@ -315,6 +329,10 @@ def _normalize_reference(dataset: Dataset, data_dir: Path, output_dir: Path,
             "diagnostico": investigation["result"]["diagnosis"],
             "hipoteses": investigation["result"]["hypotheses"],
             "informacao_faltante": investigation["result"]["missing_information"] or "Resolver falhas de validação/contrato descritas no diagnóstico.",
+            "evidencias_rca": investigation["result"]["evidence_ids"],
+            "contratos_relacionados": [r["source_id"] for r in investigation["context"]["related_contracts"]],
+            "remessas_relacionadas": [g["cnpj"] for g in investigation["context"].get("remittance_groups", [])],
+            "bancos_relacionados": [b["source_id"] for b in investigation["context"].get("bank_mentions", [])],
             "fontes_pesquisadas": investigation["context"]["searched_documents"],
             "trechos_consultados": investigation["context"]["documents"],
             "tentativas_rejeitadas": investigation["rejected"],
@@ -388,9 +406,13 @@ def load_reference(dataset: Dataset, data_dir: Path, reference_file: Path) -> Da
             if not entries or focal_id != f"orbe:EC:{ec}":
                 raise ValueError("EC de investigação não existe na fonte.")
             focal = {"source_id": focal_id, "merchant": entries[0].merchant, "cnpj": "", "establishment_code": ec, "historical": False}
+            candidates = related_rows(focal, rows, settings["threshold"], settings["candidate_limit"])
             fresh = {"source_scope": SOURCE_SCOPE, "focal": focal,
-                "related_contracts": related_rows(focal, rows, settings["threshold"], settings["candidate_limit"]),
+                "related_contracts": candidates,
                 "orbe_groups": orbe_candidates(focal, dataset, settings["threshold"], settings["samples"]),
+                "remittance_groups": remittance_candidates(focal, dataset, settings["threshold"], settings["samples"], candidates),
+                "partner_email": partner_email_evidence(dataset),
+                "bank_mentions": bank_candidates(focal, dataset, settings["threshold"], settings["samples"], candidates),
                 "documents": retrieve_documents(chunks, focal, ec),
                 "searched_documents": sorted({c["file"] for c in chunks})}
         if any(json_text(saved.get(key)) != json_text(value) for key, value in fresh.items()):

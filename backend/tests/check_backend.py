@@ -9,8 +9,10 @@ from fastapi.testclient import TestClient
 from check_banking import check as check_banking
 from check_checkout import check as check_checkout
 from check_remittances import check as check_remittances
+from check_remittance_reconciliation import check as check_remittance_reconciliation
 from check_normalization import check as check_normalization
 from check_flow_log import check as check_flow_log
+from check_banking_reference import check as check_banking_reference
 
 from src.application.closing import TECHNICAL_ASSUMPTIONS, close_month
 from src.application.diagnostics import diagnose
@@ -175,10 +177,13 @@ def check_real_closing() -> None:
         "CHECKOUT_BLOQUEADO": 291, "CLASSIFICACAO_BANCARIA": 109, "DIVERGENCIA_CHECKOUT": 92,
         "VALIDAR_RECONHECIMENTO_CONTABIL": 61, "CONTRATO_REMESSA_NAO_RESOLVIDO": 53,
         "VALIDAR_DIVERGENCIA_REMESSA": 26, "VALIDAR_SPREAD_NEGATIVO": 4, "VALIDAR_POLITICA_APURACAO": 2,
-        "CONDICAO_COMERCIAL_NAO_DEFINIDA": 1, "CORRIGIR_RELATORIO_PONTE": 1, "IDENTIFICAR_PIX": 1,
-        "CONCILIAR_TRANSFERENCIA_PROPRIA": 1,
+        "CONDICAO_COMERCIAL_NAO_DEFINIDA": 1, "CORRIGIR_RELATORIO_PONTE": 1,
+        "RECURSOS_REMESSA_DIVERGENTES": 1, "IDENTIFICAR_PIX": 1, "CONCILIAR_TRANSFERENCIA_PROPRIA": 1,
     }
     assert not {"CONTESTAR_REMESSA_PONTE", "CONFERIR_REPASSE_FUTURO_PONTE", "SALDO_NEGATIVO_CHECKOUT"} & set(pending)
+    residual = next(row for row in result.pendencias if row.tipo == "RECURSOS_REMESSA_DIVERGENTES")
+    assert residual.ref_origem == "PC-0926-0095" and residual.valor_brl == Decimal("18240.00")
+    assert residual.quem_decide == "Financeiro / Ponte Câmbio"
     assert not any("Helena" in row.quem_decide for row in result.pendencias)
     ec_of = {entry.source.ref: entry.establishment_code for entry in dataset.checkout}
     blocked = [row for row in result.pendencias if row.tipo == "CHECKOUT_BLOQUEADO"]
@@ -240,6 +245,8 @@ if __name__ == "__main__":
     check_real_closing()
     check_checkout()
     check_remittances()
+    check_remittance_reconciliation()
     check_banking()
     check_normalization()
     check_flow_log()
+    check_banking_reference()

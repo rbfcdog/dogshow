@@ -21,7 +21,8 @@ def main() -> None:
     generate.add_argument("--env-file", type=Path, default=Path(".env"))
     approve.add_argument("--referencias", type=Path, required=True)
     approve.add_argument("--revisor", required=True)
-    approve.add_argument("--movimento", action="append", required=True)
+    approve.add_argument("--movimento", action="append")
+    approve.add_argument("--todos-validos", action="store_true")
     args = parser.parse_args()
     try:
         period = _period(args.competencia) if args.command == "gerar" else None
@@ -35,8 +36,13 @@ def main() -> None:
             except ModelUnavailable as error:
                 parser.exit(2, f"Geração bancária não concluída: {error}\n")
         else:
+            import json
+            selected = args.movimento or []
+            if args.todos_validos:
+                raw = json.loads(args.referencias.read_text(encoding="utf-8"))
+                selected = [item["movement_id"] for item in raw.get("cases", []) if item.get("proposal")]
             report = approve_bank_reference(dataset, args.entrada, args.docs, args.referencias,
-                args.saida, args.revisor, args.movimento)
+                args.saida, args.revisor, selected)
     except (DataPackError, ValueError, OSError) as error:
         parser.exit(2, f"Referência bancária não concluída: {error}\n")
     sys.stdout.write(json_text(report["summary"]) + "\n")

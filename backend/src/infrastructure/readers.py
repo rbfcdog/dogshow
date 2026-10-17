@@ -48,7 +48,6 @@ _ROLES = {
     "accounts": "04_plano_de_contas_fenix_erp*.csv",
     "aurora": "05a_extrato_banco_aurora_*.csv",
     "meridiano": "05b_extrato_banco_meridiano_*.ofx",
-    # Ajustes tardios Orbe (mesmo layout do 01): parte obrigatória do checkout da competência.
     "checkout_adjustments": "06_orbe_ajustes_tardios_*.csv",
 }
 _CHECKOUT_HEADER = (
