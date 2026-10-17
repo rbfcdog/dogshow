@@ -48,6 +48,8 @@ _ROLES = {
     "accounts": "04_plano_de_contas_fenix_erp*.csv",
     "aurora": "05a_extrato_banco_aurora_*.csv",
     "meridiano": "05b_extrato_banco_meridiano_*.ofx",
+    # Ajustes tardios Orbe (mesmo layout do 01): parte obrigatória do checkout da competência.
+    "checkout_adjustments": "06_orbe_ajustes_tardios_*.csv",
 }
 _CHECKOUT_HEADER = (
     "id_transacao", "data_movimento", "cod_estabelecimento", "nome_estabelecimento",
@@ -82,13 +84,6 @@ def _select_files(data_dir: Path) -> dict[str, Path]:
                 f"Papel {role}: esperado exatamente um arquivo {pattern}; encontrados {len(matches)}."
             )
         selected[role] = require_source_file(matches[0])
-    adjustments = sorted(path for path in files if fnmatchcase(path.name.lower(), "06_orbe_ajustes_tardios_*.csv"))
-    if len(adjustments) > 1:
-        raise DataPackError(
-            f"Papel ajustes: esperado no máximo um arquivo 06_orbe_ajustes_tardios_*.csv; encontrados {len(adjustments)}."
-        )
-    if adjustments:
-        selected["adjustments"] = require_source_file(adjustments[0])
     return selected
 
 
@@ -417,11 +412,9 @@ def _partner_terms(path: Path) -> PartnerTerms:
         cnpj(taxpayer, source) if taxpayer else None, name)
 
 
-def load_dataset(data_dir: Path, *, include_adjustments: bool = False) -> Dataset:
+def load_dataset(data_dir: Path) -> Dataset:
     files = _select_files(data_dir)
-    checkout = _checkout(files["checkout"])
-    if include_adjustments and "adjustments" in files:
-        checkout = checkout + _checkout(files["adjustments"])
+    checkout = _checkout(files["checkout"]) + _checkout(files["checkout_adjustments"])
     contracts = _contracts(files["contracts"])
     remittances = _remittances(files["email"])
     accounts = _accounts(files["accounts"])

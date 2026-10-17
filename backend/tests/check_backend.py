@@ -149,7 +149,17 @@ def check_real_closing() -> None:
 
     checkout = [row for row in result.comissoes_por_lojista if row.linha_negocio == "CHECKOUT"]
     remittance = [row for row in result.comissoes_por_lojista if row.linha_negocio == "REMESSA"]
-    assert (len(checkout), total(checkout, "comissao_brl")) == (18, Decimal("194943.54"))
+    # 01 + 06 (ajustes tardios de 30/09): 13 estornos/reversões abatem 3.479,20; venda Kiwi tardia bloqueada.
+    assert (len(checkout), total(checkout, "comissao_brl")) == (18, Decimal("191464.34"))
+    late = [entry for entry in dataset.checkout if entry.source.file == "06_orbe_ajustes_tardios_set2026.csv"]
+    assert len(late) == 14 and {entry.occurred_on for entry in late} == {date(2026, 9, 30)}
+    late_refs = {entry.source.ref for entry in late}
+    late_traces = [row for row in result.rastro
+        if row.ref_origem in late_refs and row.id_saida.startswith("comissao-checkout")]
+    assert len(late_traces) == 13 and total(late_traces, "valor") == Decimal("-3479.20")
+    assert all(row.arquivo_origem == "06_orbe_ajustes_tardios_set2026.csv" for row in late_traces)
+    kiwi_late = next(row for row in result.pendencias if row.ref_origem == "TX88447225")
+    assert kiwi_late.tipo == "CHECKOUT_BLOQUEADO" and kiwi_late.valor_brl == Decimal("174.81")
     assert (len(remittance), total(remittance, "comissao_brl")) == (14, Decimal("38626.42"))
     by_line = Counter(row.linha_negocio for row in result.divergencias_taxa)
     assert by_line == {"CHECKOUT": 92, "REMESSA": 26}
@@ -162,7 +172,7 @@ def check_real_closing() -> None:
 
     pending = Counter(row.tipo for row in result.pendencias)
     assert pending == {
-        "CHECKOUT_BLOQUEADO": 290, "CLASSIFICACAO_BANCARIA": 109, "DIVERGENCIA_CHECKOUT": 92,
+        "CHECKOUT_BLOQUEADO": 291, "CLASSIFICACAO_BANCARIA": 109, "DIVERGENCIA_CHECKOUT": 92,
         "VALIDAR_RECONHECIMENTO_CONTABIL": 61, "CONTRATO_REMESSA_NAO_RESOLVIDO": 53,
         "VALIDAR_DIVERGENCIA_REMESSA": 26, "VALIDAR_SPREAD_NEGATIVO": 4, "VALIDAR_POLITICA_APURACAO": 2,
         "CONDICAO_COMERCIAL_NAO_DEFINIDA": 1, "CORRIGIR_RELATORIO_PONTE": 1, "IDENTIFICAR_PIX": 1,
@@ -173,9 +183,9 @@ def check_real_closing() -> None:
     ec_of = {entry.source.ref: entry.establishment_code for entry in dataset.checkout}
     blocked = [row for row in result.pendencias if row.tipo == "CHECKOUT_BLOQUEADO"]
     assert Counter(ec_of[row.ref_origem] for row in blocked) == {
-        "1038867654": 85, "1043396662": 75, "1043300981": 73, "1076801732": 57,
+        "1038867654": 86, "1043396662": 75, "1043300981": 73, "1076801732": 57,
     }
-    assert total(blocked) == Decimal("35368.67") and {row.quem_decide for row in blocked} == {"Comercial"}
+    assert total(blocked) == Decimal("35543.48") and {row.quem_decide for row in blocked} == {"Comercial"}
     unbound = {"78576234000179", "07752116000126", "66564512000199"}
     assert not unbound & {row.cnpj for row in checkout}
 
@@ -186,7 +196,7 @@ def check_real_closing() -> None:
     assert condition.id_saida == f"condicao-comercial:2026-09:{casa}" and condition.valor_brl is None
     invoices = result.notas_a_emitir
     assert len(invoices) == 18 and casa not in {row.tomador_cnpj for row in invoices if row.linha_negocio == "CHECKOUT"}
-    assert total([row for row in invoices if row.linha_negocio == "CHECKOUT"]) == Decimal("194943.54") - casa_checkout.comissao_brl
+    assert total([row for row in invoices if row.linha_negocio == "CHECKOUT"]) == Decimal("191464.34") - casa_checkout.comissao_brl
     remittance_invoice = [row for row in invoices if row.linha_negocio == "REMESSA"]
     assert [(row.tomador_cnpj, row.valor_brl) for row in remittance_invoice] == [("75374179000146", Decimal("38626.42"))]
 
