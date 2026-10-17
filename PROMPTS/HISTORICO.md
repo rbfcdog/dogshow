@@ -53,3 +53,7 @@
 27. Faça frontend e backend exibirem uma execução real, não apenas arquivos já presentes em disco. Inicie os serviços com os comandos documentados e ligue o botão de geração à rota do backend, mostrando etapas, erros e saídas atualizadas. Use a configuração de IA solicitada para a demonstração e confirme por requisição e resultado que houve processamento novo. Compare a saída da interface com a CLI para os mesmos dados e competência.
 
 28. Reexecute o fechamento com IA e investigue os muitos lançamentos bancários que ainda chegam sem conta. Para cada grupo de PIX ou TED, verifique se o modelo recebeu documentos, candidatos e códigos válidos; corrija falhas de contexto e validação, mas não atribua uma conta sem evidência suficiente. Compare pendências antes e depois e deixe na saída final apenas decisões humanas reais, com motivo, responsável e fontes. Não oculte ambiguidades para melhorar artificialmente a cobertura.
+
+## Pedido original preservado (horário não informado)
+
+> na saida ainda nao tem a versao nova. faca gerar a versao nova com as corrrecoes dos codigos, ainda aparecem mts vazios. faca a saida ser EXATAMENTE igual ao que pede no enunciado, so os csvs especificados, sem o json

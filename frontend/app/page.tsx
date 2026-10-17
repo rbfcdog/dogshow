@@ -51,7 +51,7 @@ export default function Dashboard() {
   const [agentFailed, setAgentFailed] = useState(false);
   const [agentSteps, setAgentSteps] = useState([
     { id: "normalizacao", title: "Normalização e RCA com LLM", description: "O modelo interpreta contratos e investiga falhas de vínculo; a resposta pode levar minutos.", status: "pending" as "pending" | "running" | "completed" },
-    { id: "revisao", title: "Validação contratual", description: "A referência contratual gerada é validada; bancos usam regras e mantêm pendências sem revisão.", status: "pending" as "pending" | "running" | "completed" },
+    { id: "revisao", title: "Validação das referências", description: "O backend valida a referência contratual e as propostas bancárias; contas sugeridas pela IA aguardam aprovação humana.", status: "pending" as "pending" | "running" | "completed" },
     { id: "fechamento", title: "Fechamento e exportação", description: "Comissões, notas, pendências e rastro são calculados no backend.", status: "pending" as "pending" | "running" | "completed" },
   ]);
 
@@ -115,6 +115,7 @@ export default function Dashboard() {
     if (!row.conta_codigo) totals.semConta++;
     return totals;
   }, { regra: 0, ia: 0, semConta: 0 });
+  const reviewPending = data.pendencias.filter(row => row.tipo === "VALIDAR_CLASSIFICACAO_IA").length;
 
   // Selected trace explanation logic
   const selectedComissao = data.comissoes.find(c => c.id_saida === selectedTraceId);
@@ -222,7 +223,7 @@ export default function Dashboard() {
           <div className="kpi-label">Lançamentos ERP</div>
           <div className="kpi-value">{resumo.lancamentos_qtd} movs</div>
           <div className="kpi-sub">
-            <span>{bankCounts.regra} Regra · {bankCounts.ia} IA Aprovada</span>
+            <span>{bankCounts.regra} Regra · {bankCounts.ia} IA{reviewPending ? ` (${reviewPending} aguardam aprovação)` : ""}</span>
             <span>{bankCounts.semConta} a classificar</span>
           </div>
         </div>

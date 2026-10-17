@@ -15,9 +15,9 @@ dist/
 # Office temporary lock files
 .~lock.*
 Tarvo_Data_Pack_*.zip
-/docs/
 /saida/*
 /.tarvo-work/
+/docs/
 !/saida/comissoes_por_lojista.csv
 !/saida/divergencias_taxa.csv
 !/saida/notas_a_emitir.csv

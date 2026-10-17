@@ -39,7 +39,8 @@ def render_summary(result: ClosingResult, applied: tuple[str, ...], warnings: tu
         f"(checkout {divergences['CHECKOUT']}, remessa {divergences['REMESSA']})   "
         f"{_brl(sum((row.diferenca_brl for row in result.divergencias_taxa), ZERO))}",
         f"Lançamentos classificados: {len(result.lancamentos_classificados)}   "
-        f"(regra {methods['REGRA']}, IA aprovada {methods['IA']}, sem conta {unclassified})",
+        f"(regra {methods['REGRA']}, IA sugerida {pending['VALIDAR_CLASSIFICACAO_IA']}, "
+        f"IA revisada {methods['IA'] - pending['VALIDAR_CLASSIFICACAO_IA']}, sem conta {unclassified})",
         f"Pendências: {len(result.pendencias)}   (rastro: {len(result.rastro)} contribuições)",
     ]
     for kind, count in pending.most_common():

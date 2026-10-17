@@ -281,7 +281,12 @@ def _check_interpreter() -> None:
         with patch("src.infrastructure.openai_normalizer.OpenAI", return_value=client) as factory:
             interpreter = OpenAIInterpreter(env_file, root / "cache")
             assert interpreter.model == "modelo-ficticio-teste"
-            factory.assert_called_once_with(timeout=120, max_retries=2)
+            factory.assert_called_once_with(api_key=fake_key, timeout=120, max_retries=2)
+            with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-chave-herdada-errada",
+                    "OPENAI_MODEL": "modelo-herdado-errado"}):
+                from_file = OpenAIInterpreter(env_file, root / "cache", env_file_only=True)
+                assert from_file.model == "modelo-ficticio-teste"
+                assert factory.call_args.kwargs["api_key"] == fake_key
             context = {
                 "source_scope": SOURCE_SCOPE,
                 "focal": {"source_id": proposal.source_id}, "candidates": [],

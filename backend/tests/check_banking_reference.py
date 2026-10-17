@@ -10,9 +10,9 @@ from tempfile import TemporaryDirectory
 from pydantic import ValidationError
 from src.application.banking import classify_banks
 from src.application.banking_reference import (
-    _hash, approve_bank_reference, generate_bank_reference, load_bank_reference,
+    _hash, approve_bank_reference, generate_bank_reference, load_bank_proposals, load_bank_reference,
 )
-from src.domain.banking_reference import BankInvestigation, BankProposal
+from src.domain.banking_reference import BankInvestigation, BankProposal, ReviewedBankDecision
 from src.domain.models import Account, BankEntry, Dataset, RemittanceEntry, SourceRef
 from src.infrastructure.banking_sources import bank_context, markdown_chunks as document_chunks
 from src.infrastructure.normalization_sources import json_text
@@ -112,6 +112,17 @@ def check() -> None:
         assert len(review_rows) == 4 and {row["ref_origem"] for row in review_rows} == {"L10", "L50", "L65", "L92"}
         _reject(lambda: load_bank_reference(dataset, data, docs, proposal_file, period))
         selected = [record["movement_id"] for record in suggestions]
+        proposed = load_bank_proposals(dataset, data, docs, proposal_file, period)
+        preview = classify_banks(dataset, period, proposals=proposed)
+        assert set(proposed) == set(selected)
+        assert {row.id_saida for row in preview.movements if row.metodo == "IA"} == set(selected)
+        assert len([row for row in preview.pending if row.tipo == "VALIDAR_CLASSIFICACAO_IA"]) == len(selected)
+        assert any(row.tipo == "MOTIVO_DEVOLUCAO_PIX" and row.ref_origem == "L65" for row in preview.pending)
+        assert all(after.valor == before.valor and after.ref_origem == before.ref_origem
+            for before, after in zip(baseline.movements, preview.movements))
+        _reject(lambda: classify_banks(dataset, period, proposals=proposed, reviewed_decisions={
+            selected[0]: ReviewedBankDecision(
+                selected[0], "1.1.09.002", "Conflito", ("extrato",), "Revisor", "hash")}))
         _reject(lambda: approve_bank_reference(dataset, data, docs, proposal_file, approved_file, " ", selected))
         _reject(lambda: approve_bank_reference(dataset, data, docs, proposal_file, approved_file, "Rodrigo", selected * 2))
         _reject(lambda: approve_bank_reference(dataset, data, docs, proposal_file, approved_file, "Rodrigo", ["inventado"]))
@@ -135,10 +146,12 @@ def check() -> None:
         _reject(lambda: load_bank_reference(dataset, data, docs, approved_file, date(2026, 10, 1)))
         changed_dataset = replace(dataset, banks=(replace(entries[0], amount=Decimal("999")),) + entries[1:])
         _reject(lambda: load_bank_reference(changed_dataset, data, docs, approved_file, period))
+        _reject(lambda: load_bank_proposals(changed_dataset, data, docs, proposal_file, period))
         for source in (financial, document):
             previous = source.read_text(encoding="utf-8")
             source.write_text(previous + "alteração\n", encoding="utf-8")
             _reject(lambda: load_bank_reference(dataset, data, docs, approved_file, period))
+            _reject(lambda: load_bank_proposals(dataset, data, docs, proposal_file, period))
             _reject(lambda: approve_bank_reference(dataset, data, docs, proposal_file, root / "obsoleta.json", "Rodrigo", selected))
             source.write_text(previous, encoding="utf-8")
         tampered_file = root / "alterada.json"

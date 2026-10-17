@@ -192,6 +192,7 @@ def check_real_closing() -> None:
         "VALIDAR_DIVERGENCIA_REMESSA": 26, "VALIDAR_SPREAD_NEGATIVO": 4, "VALIDAR_POLITICA_APURACAO": 2,
         "CONDICAO_COMERCIAL_NAO_DEFINIDA": 1, "CORRIGIR_RELATORIO_PONTE": 1,
         "RECURSOS_REMESSA_DIVERGENTES": 1, "IDENTIFICAR_PIX": 1, "CONCILIAR_TRANSFERENCIA_PROPRIA": 1,
+        "MOTIVO_DEVOLUCAO_PIX": 1,
     }
     assert not {"CONTESTAR_REMESSA_PONTE", "CONFERIR_REPASSE_FUTURO_PONTE", "SALDO_NEGATIVO_CHECKOUT"} & set(pending)
     residual = next(row for row in result.pendencias if row.tipo == "RECURSOS_REMESSA_DIVERGENTES")
@@ -233,7 +234,7 @@ def check_real_closing() -> None:
     assert Counter(row.conta_codigo for row in result.lancamentos_classificados)[""] == 109
     assert {row.quem_decide for row in result.pendencias if row.tipo in {
         "CLASSIFICACAO_BANCARIA", "VALIDAR_RECONHECIMENTO_CONTABIL", "IDENTIFICAR_PIX",
-        "CONCILIAR_TRANSFERENCIA_PROPRIA", "VALIDAR_POLITICA_APURACAO"}} == {"Financeiro"}
+        "CONCILIAR_TRANSFERENCIA_PROPRIA", "MOTIVO_DEVOLUCAO_PIX", "VALIDAR_POLITICA_APURACAO"}} == {"Financeiro"}
 
 
 def check_financial_input() -> None:

@@ -102,8 +102,9 @@ def check() -> None:
         "IDENTIFICAR_PIX": {"L50"},
         "CLASSIFICACAO_BANCARIA": unclassified,
         "CONCILIAR_TRANSFERENCIA_PROPRIA": {"L92"},
+        "MOTIVO_DEVOLUCAO_PIX": {"L65"},
     }
-    assert len(result.pending) == len(assumed) + 1 + len(unclassified) + 1
+    assert len(result.pending) == len(assumed) + 1 + len(unclassified) + 1 + 1
     assert all(item.quem_decide == "Financeiro" for item in result.pending)
     pending = {(item.tipo, item.ref_origem): item for item in result.pending}
     assert pending[("IDENTIFICAR_PIX", "L50")].valor_brl == Decimal("7350")

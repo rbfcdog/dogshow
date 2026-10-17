@@ -4,77 +4,64 @@ Backend Python com `uv`, FastAPI, cálculos em `Decimal` e separação entre dom
 
 Aplica regras confirmadas pelo financeiro, calcula comissões e divergências, propõe notas, classifica os dois extratos e gera os seis CSVs com rastro. Não executa devoluções, contestações, pagamentos ou emissão real de NF.
 
-## Como rodar a solução completa (Backend + Frontend)
+## Rodar pelo terminal e gerar os seis CSVs
 
-Para visualizar o sistema (a leitura do painel usa os CSVs já gerados; o botão **Executar** dispara novo fechamento com LLM):
-
-```bash
-# Terminal 1 — Backend FastAPI (porta 8000):
-TARVO_DATA_DIR="$PWD/dados_tarvo" uv run --locked --project backend uvicorn src.main:app --host 127.0.0.1 --port 8000
-
-# Terminal 2 — Frontend Next.js (porta 3000), após configurar a chave:
-cd frontend
-npm install
-npm run build
-npm run start
-```
-
-- **Dashboard Executivo:** [http://localhost:3000](http://localhost:3000)
-- **Documentação da API (Swagger):** [http://localhost:8000/docs](http://localhost:8000/docs)
-- **Status de Saúde:** [http://localhost:8000/health](http://localhost:8000/health)
-
-## Instalação e Requisitos
-
-Requisitos: `uv`, Python 3.12 (versão exercitada: 3.12.14) e Node.js para o frontend.
-
-Comandos a partir da raiz:
+Na **raiz do clone**, instale `uv` e Python 3.12 (o backend aceita Python 3.12 ou 3.13). Os nove arquivos de `dados_tarvo/` já estão no repositório. Execute estes comandos em um terminal Bash; a chave é lida sem aparecer na tela nem no histórico de comandos:
 
 ```bash
 uv sync --project backend --locked
-```
-
-O ambiente Python fica em `backend/.venv` e as dependências estão fixadas em `backend/uv.lock`. Não é necessário ativar o ambiente manualmente. O frontend usa Next.js 15 e React 19; instale suas dependências antes de iniciar. Configure `OPENAI_API_KEY` e `OPENAI_MODEL` no `.env` da raiz (não versionado), ou informe outro caminho com `--env-file` no comando CLI; sem credenciais válidas o fechamento padrão falha.
-
-Se necessário, extrair o pacote de dados sem sobrescrever os arquivos existentes:
-
-```bash
-unzip -n Tarvo_Data_Pack_set2026.zip -d dados_tarvo
-```
-
-O anexo XLSX de remessas é lido em memória a partir do e-mail original. A cópia de XLSX previamente extraída não é usada pelo processamento.
-## Fechamento em lote (um comando)
-
-```bash
-uv sync --project backend --locked
+read -r -s -p 'OPENAI_API_KEY: ' OPENAI_API_KEY; echo
+export OPENAI_API_KEY
+export OPENAI_MODEL=gpt-4.1-mini
 uv run --locked --project backend python -m src \
   --entrada dados_tarvo \
   --competencia 2026-09 \
   --saida saida
 ```
 
-Esse comando lê a pasta do mês, executa **normalização e investigação contratual com OpenAI em toda execução** (não reutiliza cache nessa etapa), descobre os ajustes tardios (`06_orbe`) e políticas confirmadas (`07_politicas_confirmadas.json`), calcula os valores em `Decimal` e imprime um resumo executivo. Sem referência bancária revisada, usa apenas regras bancárias e mantém movimentos sem conta como pendências; a IA contratual não classifica os PIX bancários.
+Use um modelo com acesso a respostas estruturadas na sua conta, caso `gpt-4.1-mini` não esteja disponível. Também é possível configurar `OPENAI_API_KEY` e `OPENAI_MODEL` em `.env` na raiz, sem versioná-lo, em vez de exportar as variáveis. Variáveis exportadas têm precedência na CLI. **O último comando lê `dados_tarvo/` e grava `saida/`; não é preciso iniciar API ou frontend.** Na primeira execução, ele gera automaticamente as propostas bancárias com OpenAI e normaliza os contratos antes de exportar. Se existir `docs/` local, ele consulta esses documentos nas propostas; o diretório não está no repositório. Sem esses documentos, hipóteses sem evidência continuam como pendências.
+
+Confira os seis arquivos produzidos:
+
+```bash
+printf '%s\n' saida/*.csv
+```
+
+Os nomes esperados são `comissoes_por_lojista.csv`, `divergencias_taxa.csv`, `notas_a_emitir.csv`, `lancamentos_classificados.csv`, `pendencias.csv` e `rastro.csv`. O rastro liga cada número às linhas de origem; a execução valida suas somas. JSON, cache e logs ficam em `.tarvo-work/`, nunca em `saida/`. Confira no resumo `sem conta` e o número de pendências; erro no modelo, propostas inválidas/obsoletas ou falta de chave interrompem o processo, sem converter falhas em sucesso.
+
+Se aparecer erro de **propostas bancárias obsoletas ou inválidas** em uma execução posterior, gere propostas com as fontes atuais e rode o fechamento novamente (não reutilize aprovação antiga):
+
+```bash
+uv run --locked --project backend python -m src.normalizar_bancos gerar \
+  --entrada dados_tarvo --competencia 2026-09 \
+  --saida .tarvo-work/referencias_bancarias_novas
+uv run --locked --project backend python -m src \
+  --entrada dados_tarvo --competencia 2026-09 --saida saida
+```
+
+As contas com `metodo=IA` são **propostas não aprovadas**: `VALIDAR_CLASSIFICACAO_IA` permanece em `pendencias.csv`, e nada é lançado no ERP. A revisão humana, se houver, usa o comando `normalizar_bancos aprovar` abaixo e o caminho explícito `--referencias-bancarias`. A normalização contratual consulta a LLM em toda execução; totais podem mudar conforme os vínculos evidenciados.
+
+Para o dashboard, após gerar os CSVs, inicie os dois serviços na raiz (o frontend é opcional):
+
+```bash
+TARVO_DATA_DIR="$PWD/dados_tarvo" uv run --locked --project backend uvicorn src.main:app --host 127.0.0.1 --port 8000
+# Em outro terminal: cd frontend && npm install && npm run build && npm run start
+```
+
+## Referências e formato do fechamento
 
 Referências aplicadas:
 
 | Arquivo | Origem | Regra de aplicação |
 |---|---|---|
-| `saida/referencias/referencias.json` | Gerada automaticamente pelo comando de fechamento via OpenAI | Só vale se os hashes das fontes e o contexto de cada decisão baterem com os arquivos atuais. |
-| Referência bancária revisada (opcional) | `python -m src.normalizar_bancos aprovar` após nova geração com LLM | Aplicada somente com `--referencias-bancarias` explícito; exige fontes atuais e aprovação humana válida. Sem ela, o fechamento bancário usa regras e registra pendências. |
+| `.tarvo-work/referencias/referencias.json` | Gerada automaticamente pelo fechamento via OpenAI | Exige hashes e contexto atuais. |
+| `.tarvo-work/referencias_bancarias_novas/referencias_bancarias.json` | Gerada automaticamente com OpenAI quando ausente; também pode ser gerada com `normalizar_bancos gerar` | Propostas validadas e aplicadas como IA **não aprovada**, com pendência humana no CSV. |
+| Referência bancária revisada (opcional) | `python -m src.normalizar_bancos aprovar` após nova geração | Prevalece sobre propostas com `--referencias-bancarias`; exige aprovação humana válida. |
 
 O arquivo local `revisada-v1.json` teve hashes das fontes e da proposta **reescritos após a revisão**, sem nova aprovação. Não o use como evidência de revisão dos dados atuais. Gere propostas atuais e peça revisão; nunca atualize hashes de uma aprovação antiga para fazê-la passar.
 
-`--referencias` e `--referencias-bancarias` aceitam destinos explícitos; a referência bancária só é aplicada quando aprovada, informada e válida para as fontes atuais.
-
+`--referencias`, `--propostas-bancarias` e `--referencias-bancarias` aceitam caminhos explícitos. Se uma proposta existente estiver obsoleta ou inválida, gere-a novamente com `normalizar_bancos gerar`; não reutilize nem aprove automaticamente a versão antiga. JSON, caches e logs ficam fora de `saida/`, que contém somente os seis CSVs pedidos.
 O comando termina com código zero quando conclui, e com código 2 e mensagem em caso de entrada inválida. Os arquivos originais não são alterados. O carregador exige `06_orbe_ajustes_tardios_*.csv` além de `01_orbe_relatorio_comissoes_*.csv`, integrando estornos e reversões de antecipação e preservando arquivo e linha física de cada lançamento no rastro.
-
-Saídas:
-
-- `saida/comissoes_por_lojista.csv`
-- `saida/divergencias_taxa.csv`
-- `saida/notas_a_emitir.csv`
-- `saida/lancamentos_classificados.csv`
-- `saida/pendencias.csv`
-- `saida/rastro.csv`
 
 CSV UTF-8 com `;`, decimal com ponto, dinheiro em reais com duas casas decimais, datas ISO e CNPJ com 14 dígitos. O rastro inclui linha física, aba e descrição da regra como colunas extras.
 
@@ -107,40 +94,29 @@ Os dois comandos não imprimem saída quando passam. Os controles já integram o
 
 O fluxo bancário é separado da normalização contratual da Orbe. Regras conhecidas continuam no classificador; somente movimentos pendentes ou sem conta seguem para interpretação/RCA. No pacote de setembro, são L50 (PIX sem finalidade conhecida), L65 (motivo da devolução) e L92 (transferência em trânsito).
 
-Gerar sugestões envia o contexto selecionado à OpenAI, incluindo movimento, plano de contas, correspondências candidatas e trechos documentais. Configure `OPENAI_API_KEY` e `OPENAI_MODEL` no `.env`; variáveis já exportadas prevalecem. Não publique referências bancárias brutas nem caches: contêm evidências financeiras. Em `saida/`, apenas os seis CSVs obrigatórios entram no Git.
+Gerar sugestões envia contexto selecionado à OpenAI: movimento, plano de contas e evidências documentais. Configure `OPENAI_API_KEY` e `OPENAI_MODEL` no `.env`; variáveis exportadas prevalecem. Não publique referências bancárias brutas nem caches. Em `saida/`, somente os seis CSVs obrigatórios.
 
-```bash
-uv run --locked --project backend python -m src.normalizar_bancos gerar \
-  --entrada dados_tarvo --competencia 2026-09 --docs docs \
-  --saida saida/referencias_bancarias_novas
-```
+Saídas locais da geração bancária: `referencias_bancarias.json`, `classificacoes_sugeridas.csv`, `revisao_humana.csv`, `rca_bancaria.json`, `escaladas_humanas.json` e `cache_llm/`. Propostas válidas entram no CSV de fechamento como `IA`, ainda pendentes de revisão humana. A conta sugerida deve existir no plano, ser analítica, lançável e ter evidência; o schema estruturado restringe `evidence_ids`, `account_code` e `movement_id` aos identificadores reais do contexto, sem alterar valor, data ou identidade do movimento nem inventar NF/baixa. Erro da API interrompe a geração, sem fallback fabricado.
 
-Saídas: `referencias_bancarias.json`, `classificacoes_sugeridas.csv`, `revisao_humana.csv`, `rca_bancaria.json`, `escaladas_humanas.json` e `cache_llm/`. Esses arquivos não alteram o fechamento. A conta sugerida deve existir no plano, ser analítica, lançável e ter evidência; o schema estruturado restringe `evidence_ids`, `account_code` e `movement_id` aos identificadores reais do contexto, sem alterar valor, data ou identidade do movimento nem inventar NF/baixa. Erro da API interrompe a geração, sem fallback fabricado.
-
-Prévia auditável desta execução: `saida/referencias_bancarias_novas/previa_classificacao_nao_aprovada.csv` reúne os 184 movimentos, preserva as 74 contas de regra e mostra as 110 propostas validadas da LLM em `conta_codigo_previa` com `status=IA_NAO_APROVADA` e evidências. Preenche em prévia as 109 contas antes vazias; **não é um dos seis CSVs oficiais nem substitui revisão**. `classificacoes_sugeridas.csv` guarda a justificativa integral por proposta.
+Uma prévia local anterior (`.tarvo-work/referencias_bancarias_novas/previa_classificacao_nao_aprovada.csv`) não é gerada pelo comando de uma instalação limpa e não integra os seis CSVs oficiais. O fechamento aplica as propostas válidas no CSV oficial com `metodo=IA` e deixa a revisão pendente em `pendencias.csv`.
 
 `escaladas_humanas.json` e `revisao_humana.csv` consolidam o dossiê de revisão humana por movimento: dados originais do extrato, conta atual e conta proposta com descrições, separação entre decisão contábil e pendência operacional, nível de autoridade (`CRITERIO_CONFIRMADO_PELO_FINANCEIRO` vs `DECISAO_FUNDAMENTADA_DO_TIME_EM_HIPOTESES`), diagnóstico validado, hipóteses não confirmadas, evidências citadas resolvidas, ações específicas para o revisor e o comando exato de aprovação quando aplicável.
 
 ```bash
 uv run --locked --project backend python -m src.normalizar_bancos aprovar \
-  --entrada dados_tarvo --docs docs \
-  --referencias saida/referencias_bancarias_novas/referencias_bancarias.json \
-  --saida saida/referencias_bancarias/revisada-v2.json \
+  --entrada dados_tarvo \
+  --referencias .tarvo-work/referencias_bancarias_novas/referencias_bancarias.json \
+  --saida .tarvo-work/referencias_bancarias/revisada-v2.json \
   --revisor 'NOME DO REVISOR' --todos-validos
 ```
 
 A revisão não consulta a OpenAI. Registra o nome declarado do revisor, as propostas selecionadas e hashes das fontes/decisões; não é autenticação de identidade nem assinatura criptográfica. O arquivo revisado é separado e não sobrescreve uma versão existente.
 
-```bash
-uv run --locked --project backend python -m src \
-  --entrada dados_tarvo --competencia 2026-09 --saida saida --docs docs
-```
-
-O fechamento rejeita sugestões ainda não revisadas, outra competência, alteração das fontes financeiras/documentais ou adulteração da proposta revisada. A reaplicação da referência bancária aprovada mantém IDs, valores e origens, aplica a conta com `metodo=IA` e registra revisor/evidências no rastro; a normalização contratual chama a LLM novamente. A confiança `0.80` não é probabilidade calibrada.
+O fechamento rejeita propostas de outra competência, fontes alteradas ou contas sem evidência. Sem aprovação humana, a conta sugerida sai como `metodo=IA`, com evidências no rastro e `VALIDAR_CLASSIFICACAO_IA` nas pendências: **não autoriza lançamento no ERP**. Com `--referencias-bancarias` e aprovação genuína, registra também o revisor. Confiança `0.80` não é probabilidade calibrada.
 
 Aprovar uma conta não comprova conciliação com título/NF nem resolve automaticamente origem do PIX, motivo de devolução ou confirmação de crédito futuro. Essas pendências operacionais são preservadas. Sem proposta sustentada, não há conta a aprovar: mantenha o fechamento pelas regras existentes e encaminhe o diagnóstico, sem criar receita ou pagamento.
 
-`--referencias` da Orbe e `--referencias-bancarias` podem ser usados juntos; quando informada, a referência bancária é verificada no pacote bruto antes da materialização contratual. A rota `POST /api/v1/fechamento/executar`, usada pelo frontend, não requer revisão bancária: gera um fechamento preliminar com regras bancárias e pendências, sempre com normalização contratual por LLM.
+`--referencias-bancarias` revisada prevalece sobre as propostas; ambas exigem fontes atuais. A rota `POST /api/v1/fechamento/executar`, usada pelo frontend, gera propostas bancárias com LLM quando ausentes e sempre normaliza contratos com LLM.
 
 ## Frontend (Dashboard Next.js em Modo Escuro)
 
@@ -155,7 +131,7 @@ cd frontend
 
 Acessar em `http://localhost:3000`.
 
-O botão **Executar fechamento com LLM** chama `POST /api/run` no Next.js, que chama `POST http://127.0.0.1:8000/api/v1/fechamento/executar?competencia=2026-09`. O backend executa `normalize_reference` com `OpenAIInterpreter` (normalização e RCA) e políticas confirmadas, valida a referência contratual, fecha o mês com classificação bancária por regras e grava os seis CSVs. O botão usa `reuse_cache=False`: consulta o modelo novamente mesmo quando há resposta em cache. Sem chave/modelo ou normalização concluída, a rota devolve erro sem fechamento parcial. Sem referência bancária revisada, lançamentos não classificados continuam pendentes; não são apresentados como aprovados. A interface só confirma as etapas após a resposta, sem simular progresso durante a chamada.
+O botão **Executar fechamento com LLM** chama `POST /api/run` no Next.js, que chama `POST http://127.0.0.1:8000/api/v1/fechamento/executar?competencia=2026-09`. O backend gera propostas bancárias com LLM quando ausentes, normaliza contratos pela LLM e grava os seis CSVs; propostas existentes obsoletas ou inválidas geram erro. A rota usa `OPENAI_API_KEY` e `OPENAI_MODEL` diretamente do `.env` da raiz, ignorando valores exportados herdados pelo processo HTTP; a CLI continua respeitando variáveis exportadas. A normalização contratual usa `reuse_cache=False`.
 
 ### Recursos da Interface
 
@@ -236,21 +212,9 @@ A API é local e não possui autenticação. Não publicar essa configuração n
 
 ## Resultado exercitado em setembro
 
-Os seis CSVs de `saida/` foram gerados pelo comando padrão com 27 respostas novas do `gpt-6-luna` para contratos/RCA, sem cache. **São preliminares**: a classificação bancária foi apenas por regras, e 109 lançamentos ficaram sem conta. Nesta segunda execução com as mesmas fontes, a IA não confirmou o vínculo contratual de 86 transações antes aceitas para o EC 1038867654; a comissão total caiu R$ 10.886,22. Essas linhas permanecem pendentes, não foram preenchidas com uma taxa inventada. Revisão comercial é necessária antes de tratar o resultado como fechamento aprovado.
+O fechamento de setembro grava em `saida/` os seis CSVs definidos no enunciado. As propostas bancárias validadas foram aplicadas como `IA`, não como `HUMANO`: cada uma possui pendência `VALIDAR_CLASSIFICACAO_IA` antes da escrituração. O valor das comissões e das notas continua determinado exclusivamente pelo núcleo `Decimal` sobre as linhas de origem; classificações bancárias não alteram dinheiro nem eliminam pendências de conciliação.
 
-| Métrica | Execução com IA contratual, sem revisão bancária |
-|---|---:|
-| Ajustes tardios Orbe (`06_orbe`) | 14 linhas integradas |
-| Comissão de checkout apurada | R$ 192.849,12 |
-| Comissão de remessas apurada | R$ 39.543,45 |
-| Total de comissão apurada | R$ 232.392,57 (34 registros) |
-| Notas fiscais propostas (soma R$) | 20 (R$ 232.398,07) |
-| Divergências de taxa | 238 (210 checkout + 28 remessa) |
-| Movimentos bancários classificados | 184 (184 regra / 109 sem conta) |
-| Pendências totais | 560 |
-| Contribuições no rastro (`rastro.csv`) | 5.085 |
-
-> O comando padrão exige `OPENAI_API_KEY`, `OPENAI_MODEL` e rede, mas não exige revisão bancária. Faz chamadas novas à OpenAI para contratos a cada execução; o cache dos comandos separados de normalização não substitui essas chamadas. Uma referência bancária só é aplicada quando passada explicitamente com `--referencias-bancarias` e validada contra as fontes atuais. As fórmulas são determinísticas, mas vínculos e decisões revisadas podem alterar os números.
+O comando padrão exige chave, modelo e rede para nova normalização contratual. `--referencias-bancarias` permite usar uma versão realmente revisada em lugar das propostas. Fórmulas são determinísticas, mas novos vínculos contratuais podem mudar números entre execuções; consulte os próprios CSVs e o resumo impresso para os totais da execução.
 
 Casa do Estudante fecha com saldo de checkout em −R$ 5,50 por estorno de venda de agosto (vendas de setembro isentas) e não recebe NF; Atlas Idiomas fica bloqueada sem NF aguardando confirmação contratual. Pendências incluem bases distintas, como taxas reportadas, diferenças contratuais, recebimentos a conferir e movimentos bancários: **não somar todas como exposição financeira ou receita perdida**.
 
@@ -310,19 +274,18 @@ uv run --locked --project backend python backend/tests/check_backend.py
 
 O comando termina sem prints quando passa; falhas geram `AssertionError` e código não zero. Não usar `python -O`, que desativa os asserts.
 
-Cobre arredondamento, vigência, isenção e estorno histórico, antecipação/reversão, Atlas bloqueada, deduplicação/conflito, remessas negativas, compliance, notas/rastros, contas de contrapartida e HTTP. Também verifica sugestões bancárias sem efeito antes da revisão, contas/evidências inválidas, adulteração, fontes obsoletas, competência e aplicação revisada sem mudar dinheiro nem apagar pendências operacionais. Usa biblioteca padrão e TestClient com `httpx2`.
+Cobre arredondamento, contratos, notas, rastro, conta analítica e HTTP. Também valida a aplicação das propostas como `IA` sem fingir aprovação, pendências operacionais, rejeição de fontes obsoletas e aplicação de decisões humanas apenas quando realmente revisadas.
 
-Foram exercitados duas vezes o fechamento contratual com 27 respostas novas da OpenAI em cada execução, a leitura HTTP dos CSVs preliminares e o painel web. No lote mais recente, o rastro contém 5.085 contribuições e coincide com os valores de todos os IDs monetários exportados.
+Em uma execução limpa sem `docs/`, o fechamento gerou as seis saídas e as duas referências locais com OpenAI; propostas bancárias permaneceram não aprovadas. Os totais variam conforme as evidências locais e as respostas do modelo: confira o resumo, `pendencias.csv` e `rastro.csv` de cada execução em vez de assumir quantidades fixas.
 
 ## Fontes e limites
 
 - Regras confirmadas, hipóteses e fontes: [HIPOTESES.md](HIPOTESES.md).
-- Histórico de sessões, com pedidos e respostas originais: [PROMPTS/HISTORICO_LITERAL.md](PROMPTS/HISTORICO_LITERAL.md).
-- Versões reescritas dos pedidos, não transcrição: [PROMPTS/HISTORICO.md](PROMPTS/HISTORICO.md).
+- Histórico de prompts (pedidos antigos resumidos; último pedido preservado literalmente): [PROMPTS/HISTORICO.md](PROMPTS/HISTORICO.md).
 - Momentos relevantes de uso da IA: [PROMPTS/MOMENTOS.md](PROMPTS/MOMENTOS.md).
 
-`docs/` permanece local e não é enviado ao repositório. Os nove arquivos de entrada em `dados_tarvo/`, o README, `HIPOTESES.md`, o histórico de prompts e os seis CSVs são versionados; credenciais em `.env`, caches e referências bancárias sem revisão não são publicados.
+`docs/` permanece local e não é publicado. Quando fornecido, seus arquivos entram nos hashes das propostas bancárias; numa instalação nova sem documentos locais, a IA gera propostas a partir de `dados_tarvo/`. `saida/` contém exatamente os seis CSVs do enunciado. Credenciais em `.env`, caches e referências não revisadas em `.tarvo-work/` não são publicados; o comando de fechamento acima gera as propostas ausentes automaticamente.
 
 Os leitores reconhecem os papéis e cabeçalhos atuais de Orbe, contratos, e-mail Ponte, plano de contas, Aurora CSV e Meridiano OFX 1.02/SGML. Não prometem aceitar layouts diferentes. Uma pasta deve ter exatamente um arquivo por papel; múltiplos candidatos geram erro explícito. CNPJs fictícios são normalizados sem validar dígitos verificadores.
 
-A geração assistida usa OpenAI com respostas estruturadas. No fluxo bancário, propostas e RCA precisam de revisão explícita antes de afetar a classificação. O fechamento padrão sempre faz chamadas novas à LLM contratual e falha sem credencial ou rede; sem referência bancária aprovada, usa regras bancárias e mantém pendências. Comandos separados de normalização podem reutilizar seu próprio cache. Nenhuma ação financeira externa é autorizada.
+A geração usa OpenAI com respostas estruturadas. Propostas bancárias não aprovadas podem preencher o CSV como `IA` e permanecem pendentes de validação antes de qualquer postagem; não são decisões humanas. Referências, logs e caches ficam em `.tarvo-work/`, fora dos seis CSVs de `saida/`. O fechamento chama novamente a LLM contratual e falha sem credencial ou rede. Nenhuma ação financeira externa é autorizada.

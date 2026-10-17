@@ -59,7 +59,7 @@ def create_router(data_dir: Path | None) -> APIRouter:
         from src.application.normalization import load_reference, normalize_reference
         from src.infrastructure.flow_log import FlowLog
         from src.infrastructure.slack_inbox import default_inbox, find_inbox_file, parse_inbox
-        from src.application.banking_reference import load_bank_proposals
+        from src.application.banking_reference import generate_bank_reference, load_bank_proposals
 
         assert data_dir is not None
         saida_dir = Path("saida")
@@ -69,12 +69,19 @@ def create_router(data_dir: Path | None) -> APIRouter:
         inbox_file = find_inbox_file(data_dir)
         policies = parse_inbox(inbox_file) if inbox_file else default_inbox()
         try:
+            if not bank_file.exists():
+                bank_interpreter = OpenAIInterpreter(Path(".env"), bank_file.parent / "cache_llm",
+                    reuse_cache=False, env_file_only=True)
+                generate_bank_reference(dataset, data_dir, Path("docs"), bank_file.parent, period, bank_interpreter)
             bank_proposals = load_bank_proposals(dataset, data_dir, Path("docs"), bank_file, period)
+        except ModelUnavailable as error:
+            raise HTTPException(502, str(error)) from error
         except (ValueError, OSError) as error:
-            raise HTTPException(409, f"Propostas bancárias ausentes ou obsoletas: {error}") from error
+            raise HTTPException(409, f"Propostas bancárias inválidas ou obsoletas: {error}") from error
         try:
             with FlowLog(contract_dir) as log:
-                interpreter = OpenAIInterpreter(Path(".env"), contract_dir / "cache_llm", log=log, reuse_cache=False)
+                interpreter = OpenAIInterpreter(Path(".env"), contract_dir / "cache_llm", log=log,
+                    reuse_cache=False, env_file_only=True)
                 report = normalize_reference(dataset, data_dir, contract_dir, interpreter, log=log, inbox=policies)
         except ModelUnavailable as error:
             raise HTTPException(502, str(error)) from error

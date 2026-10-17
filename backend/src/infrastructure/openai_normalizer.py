@@ -3,7 +3,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Literal
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 from openai import APIError, OpenAI
 from pydantic import ConfigDict, Field, create_model
 
@@ -184,14 +184,22 @@ class ModelUnavailable(RuntimeError):
 
 
 class OpenAIInterpreter:
-    def __init__(self, env_file: Path, cache_dir: Path, *, log: FlowLog | None = None, reuse_cache: bool = True):
-        load_dotenv(env_file, override=False)
-        if not os.environ.get("OPENAI_API_KEY"):
+    def __init__(self, env_file: Path, cache_dir: Path, *, log: FlowLog | None = None,
+        reuse_cache: bool = True, env_file_only: bool = False):
+        if env_file_only:
+            config = dotenv_values(env_file)
+            key = config.get("OPENAI_API_KEY")
+            model = config.get("OPENAI_MODEL")
+        else:
+            load_dotenv(env_file, override=False)
+            key = os.environ.get("OPENAI_API_KEY")
+            model = os.environ.get("OPENAI_MODEL")
+        if not key:
             raise ModelUnavailable("OPENAI_API_KEY ausente; configure o .env.")
-        self.model = os.environ.get("OPENAI_MODEL", "").strip()
+        self.model = (model or "").strip()
         if not self.model:
             raise ModelUnavailable("OPENAI_MODEL ausente; configure o identificador do modelo no .env.")
-        self.client = OpenAI(timeout=120, max_retries=2)
+        self.client = OpenAI(api_key=key, timeout=120, max_retries=2)
         self.cache_dir = cache_dir
         self.reuse_cache = reuse_cache
         self.log = log

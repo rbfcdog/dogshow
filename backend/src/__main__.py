@@ -65,7 +65,14 @@ def main() -> None:
             bank_decisions = load_bank_reference(dataset, arguments.entrada, arguments.docs, bank_file, period)
             applied.append(f"bancária aprovada por revisor ({len(bank_decisions)} decisões): {bank_file}")
         else:
-            from src.application.banking_reference import load_bank_proposals
+            from src.application.banking_reference import generate_bank_reference, load_bank_proposals
+            if not arguments.propostas_bancarias.exists():
+                if arguments.propostas_bancarias.name != BANK_PROPOSALS.name:
+                    raise ValueError(f"Propostas bancárias ausentes: {arguments.propostas_bancarias}")
+                bank_interpreter = OpenAIInterpreter(resolve_env_file(arguments.env_file),
+                    arguments.propostas_bancarias.parent / "cache_llm", reuse_cache=False)
+                generate_bank_reference(dataset, arguments.entrada, arguments.docs,
+                    arguments.propostas_bancarias.parent, period, bank_interpreter)
             bank_proposals = load_bank_proposals(dataset, arguments.entrada, arguments.docs,
                 arguments.propostas_bancarias, period)
             applied.append(f"propostas bancárias da IA ({len(bank_proposals)} contas não aprovadas): {arguments.propostas_bancarias}")
