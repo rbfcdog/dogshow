@@ -1,0 +1,384 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Do Cartão ao Caixa</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap">
+<style>
+/* Layout: coluna editorial única (máx. 960px), blocos em sequência; o diagrama interativo é o centro da página. */
+:root{
+  --bg:#fefefe; --bg2:#f9f9f9; --bg3:#efefef;
+  --fg:#171717; --fg2:#404040; --fg3:#737373;
+  --ink:#030202; --ink-fg:#fefefe;
+  --brand:#df285d; --brand-soft:#fbcad3; --brand-tint:#fdf0f3;
+  --stroke:#efefef; --stroke2:#d4d4d4;
+  --green:#169e72; --green-soft:#d2fff1;
+  --blue:#00a5e2; --blue-soft:#e1f7ff;
+  --orange:#ec9732; --orange-soft:#fff0db;
+  --purple:#7239d6; --purple-soft:#e8e0f7;
+  --font:"Inter", system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0e0c0c; --bg2:#171515; --bg3:#221f1f;
+  --fg:#f3f1f1; --fg2:#cfcaca; --fg3:#9a9393;
+  --ink:#f3f1f1; --ink-fg:#0e0c0c;
+  --brand:#f0507f; --brand-soft:#5a1d2f; --brand-tint:#2a151b;
+  --stroke:#2a2626; --stroke2:#3d3838;
+  --green:#3cc996; --green-soft:#12362a;
+  --blue:#3cc2f2; --blue-soft:#0f2e3b;
+  --orange:#f2ab55; --orange-soft:#3a2a14;
+  --purple:#a07cf0; --purple-soft:#2a2040;
+  color-scheme:dark;
+}}
+:root[data-theme="dark"]{
+  --bg:#0e0c0c; --bg2:#171515; --bg3:#221f1f;
+  --fg:#f3f1f1; --fg2:#cfcaca; --fg3:#9a9393;
+  --ink:#f3f1f1; --ink-fg:#0e0c0c;
+  --brand:#f0507f; --brand-soft:#5a1d2f; --brand-tint:#2a151b;
+  --stroke:#2a2626; --stroke2:#3d3838;
+  --green:#3cc996; --green-soft:#12362a;
+  --blue:#3cc2f2; --blue-soft:#0f2e3b;
+  --orange:#f2ab55; --orange-soft:#3a2a14;
+  --purple:#a07cf0; --purple-soft:#2a2040;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font-family:var(--font);font-size:16px;line-height:1.55;font-weight:500;-webkit-font-smoothing:antialiased}
+.wrap{max-width:960px;margin:0 auto;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:0}
+h1,h2,h3{text-wrap:balance;margin:0;color:var(--fg)}
+p{margin:0}
+.num{font-variant-numeric:tabular-nums}
+.over{font-size:12px;font-weight:600;letter-spacing:1.6px;text-transform:uppercase;color:var(--fg3)}
+.over.brand{color:var(--brand)}
+
+/* topo */
+.top{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-block:20px;border-bottom:1px solid var(--stroke)}
+.top svg{height:26px;width:auto;color:var(--ink)}
+.top .tag{font-size:12px;font-weight:600;color:var(--fg3)}
+
+/* hero */
+.hero{padding-block:56px 40px;display:grid;gap:20px}
+.hero h1{font-size:clamp(34px,6vw,56px);font-weight:800;letter-spacing:-1px;line-height:1.08;max-width:16ch}
+.hero h1 em{font-style:normal;color:var(--brand)}
+.hero .lede{font-size:clamp(17px,2.2vw,20px);color:var(--fg2);max-width:60ch}
+.receipt{display:inline-flex;flex-wrap:wrap;gap:8px 18px;align-items:baseline;background:var(--bg2);border:1px solid var(--stroke);border-radius:12px;padding:14px 18px;font-size:15px;color:var(--fg2);max-width:100%}
+.receipt b{color:var(--fg);font-weight:700}
+
+section{padding-block:44px;border-top:1px solid var(--stroke)}
+.sec-head{display:grid;gap:8px;margin-bottom:28px;max-width:65ch}
+.sec-head h2{font-size:clamp(26px,3.6vw,34px);font-weight:700;letter-spacing:-.4px;line-height:1.2}
+.sec-head p{color:var(--fg2)}
+
+/* elenco */
+.cast{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}
+.card{border:1px solid var(--stroke2);border-radius:12px;padding:20px;display:grid;gap:10px;align-content:start;background:var(--bg);min-width:0}
+.card .who{display:flex;align-items:center;gap:10px}
+.dot{width:12px;height:12px;border-radius:50%;flex:none}
+.card h3{font-size:19px;font-weight:700;letter-spacing:-.2px}
+.card .aka{font-size:13px;color:var(--fg3);font-weight:500}
+.card .what{color:var(--fg2);font-size:15px}
+.card .row{display:grid;gap:2px;font-size:14px}
+.card .row span:first-child{font-size:11px;font-weight:600;letter-spacing:1.4px;text-transform:uppercase;color:var(--fg3)}
+.card .row span:last-child{color:var(--fg)}
+.card.sub{border:2px solid var(--brand);background:var(--brand-tint)}
+.card.sub .pill{justify-self:start;background:var(--brand);color:#fefefe;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;padding:3px 10px;border-radius:999px}
+
+/* fluxo */
+.tabs{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:18px}
+.tab{font:inherit;font-size:14px;font-weight:600;padding:9px 16px;border-radius:999px;border:1px solid var(--stroke2);background:var(--bg);color:var(--fg);cursor:pointer}
+.tab[aria-selected="true"]{background:var(--ink);color:var(--ink-fg);border-color:var(--ink)}
+.tab:focus-visible,.btn:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+.flow-box{border:1px solid var(--stroke2);border-radius:16px;padding:22px;background:var(--bg2)}
+.chain{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;position:relative}
+.node{border:1px solid var(--stroke2);background:var(--bg);border-radius:10px;padding:12px 8px;text-align:center;display:grid;gap:4px;transition:transform .25s,border-color .25s,background .25s,opacity .25s;opacity:.45}
+.node .ic{font-size:11px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:var(--fg3)}
+.node .nm{font-size:14px;font-weight:700;line-height:1.25}
+.node.on{opacity:1;border-color:var(--ink);transform:translateY(-3px)}
+.node.on.hot{border:2px solid var(--brand);background:var(--brand-tint)}
+.arrow-row{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;margin-top:10px;height:22px}
+.arrow-row div{position:relative}
+.arrow{position:absolute;top:10px;height:2px;background:var(--brand);opacity:0;transition:opacity .25s}
+.arrow::after{content:"";position:absolute;top:-5px;border:6px solid transparent}
+.arrow.r::after{right:-2px;border-left-color:var(--brand);border-right:0}
+.arrow.l::after{left:-2px;border-right-color:var(--brand);border-left:0}
+.arrow.show{opacity:1}
+.step-text{margin-top:18px;min-height:120px;display:grid;gap:8px;align-content:start}
+.step-text .count{font-size:12px;font-weight:600;letter-spacing:1.4px;text-transform:uppercase;color:var(--brand)}
+.step-text h3{font-size:20px;font-weight:700}
+.step-text p{color:var(--fg2);max-width:65ch}
+.controls{display:flex;gap:8px;align-items:center;margin-top:14px;flex-wrap:wrap}
+.btn{font:inherit;font-size:14px;font-weight:600;padding:10px 18px;border-radius:6px;border:1px solid var(--ink);background:var(--ink);color:var(--ink-fg);cursor:pointer;transition:background .15s,border-color .15s}
+.btn:hover{background:var(--brand);border-color:var(--brand);color:#fefefe}
+.btn.ghost{background:transparent;color:var(--fg);border-color:var(--stroke2)}
+.btn.ghost:hover{background:var(--bg3);color:var(--fg);border-color:var(--stroke2)}
+.btn[disabled]{opacity:.35;cursor:default;pointer-events:none}
+.dots{display:flex;gap:6px;margin-left:auto}
+.dots i{width:8px;height:8px;border-radius:50%;background:var(--stroke2)}
+.dots i.on{background:var(--brand)}
+.flow-note{margin-top:16px;font-size:14px;color:var(--fg3)}
+@media (max-width:640px){
+  .chain{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .arrow-row{display:none}
+}
+.chain.static .node{opacity:1}
+.lanes{display:grid;gap:10px;margin-top:16px}
+.lane{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px;padding:10px 16px;border-radius:10px;font-size:14px;color:var(--fg)}
+.lane b{font-weight:700}
+.lane span{color:var(--fg2);flex:1 1 220px;min-width:0}
+.lane em{font-style:normal;font-weight:600;font-size:12px;letter-spacing:1.2px;text-transform:uppercase}
+.lane.msg{background:var(--blue-soft)}
+.lane.msg b::before{content:"→ ";color:var(--blue)}
+.lane.money{background:var(--green-soft)}
+.lane.money b::before{content:"← ";color:var(--green)}
+
+/* dinheiro */
+.split{display:grid;gap:22px}
+.bigbar{display:flex;height:56px;border-radius:10px;overflow:hidden;border:1px solid var(--stroke2)}
+.bigbar .keep{flex:97.31;background:var(--bg3);display:flex;align-items:center;padding-left:16px;font-weight:700;font-size:15px;color:var(--fg)}
+.bigbar .fee{flex:2.69;background:var(--brand);min-width:10px}
+.zoom-label{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;font-size:14px;color:var(--fg2)}
+.zoombar{display:flex;height:64px;border-radius:10px;overflow:hidden}
+.zoombar div{display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;color:#fefefe;min-width:0;padding:0 4px;text-align:center;line-height:1.1}
+.legend{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}
+.leg{display:grid;grid-template-columns:auto 1fr auto;gap:4px 10px;align-items:baseline;padding:12px 14px;border:1px solid var(--stroke);border-radius:8px;background:var(--bg)}
+.leg .dot{align-self:center}
+.leg b{font-weight:700}
+.leg .v{font-weight:700;white-space:nowrap}
+.leg small{grid-column:2 / 4;color:var(--fg3);font-size:13px}
+.disclaimer{font-size:13px;color:var(--fg3)}
+
+/* por quê */
+.two{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}
+.panel{border-radius:12px;padding:20px;display:grid;gap:10px;align-content:start}
+.panel.good{background:var(--green-soft)}
+.panel.bad{background:var(--orange-soft)}
+.panel h3{font-size:17px;font-weight:700}
+.panel ul{margin:0;padding-left:18px;display:grid;gap:6px;color:var(--fg)}
+.callout{margin-top:16px;border-left:3px solid var(--fg);padding:4px 0 4px 16px;color:var(--fg2);max-width:70ch}
+.callout b{color:var(--fg)}
+
+/* não confunda */
+.notlist{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}
+.not{border:1px dashed var(--stroke2);border-radius:12px;padding:18px;display:grid;gap:6px}
+.not h3{font-size:16px;font-weight:700}
+.not p{color:var(--fg2);font-size:15px}
+
+/* case */
+.case{background:var(--ink);color:var(--ink-fg);border-radius:20px;padding:28px;display:grid;gap:22px}
+.case .over{color:var(--brand)}
+.case h2{color:var(--ink-fg);font-size:clamp(24px,3.4vw,32px);font-weight:700;letter-spacing:-.4px}
+.case > p{opacity:.8;max-width:65ch}
+.map{width:100%;border-collapse:collapse;font-size:15px}
+.map-wrap{overflow-x:auto}
+.map th{text-align:left;font-size:11px;letter-spacing:1.4px;text-transform:uppercase;font-weight:600;opacity:.6;padding:0 12px 10px 0}
+.map td{padding:12px 12px 12px 0;border-top:1px solid color-mix(in srgb,var(--ink-fg) 18%,transparent);vertical-align:top}
+.map td:first-child{font-weight:700;min-width:120px}
+.map td:nth-child(2){white-space:nowrap}
+.role{display:inline-block;font-size:12px;font-weight:700;padding:3px 10px;border-radius:999px;background:color-mix(in srgb,var(--ink-fg) 12%,transparent)}
+.role.hot{background:var(--brand);color:#fefefe}
+@media (max-width:640px){
+  .map thead{display:none}
+  .map tr{display:grid;gap:6px;padding:12px 0;border-top:1px solid color-mix(in srgb,var(--ink-fg) 18%,transparent)}
+  .map td{display:block;border-top:0;padding:0}
+  .map td:first-child{min-width:0}
+}
+.case .warn{border:1px solid color-mix(in srgb,var(--ink-fg) 25%,transparent);border-radius:10px;padding:14px 16px;font-size:15px}
+.case .warn b{color:var(--brand)}
+
+/* glossário */
+.gloss{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:0 28px}
+.gloss dl{margin:0}
+.term{padding:14px 0;border-top:1px solid var(--stroke);display:grid;gap:4px}
+.term dt{font-weight:700}
+.term dd{margin:0;color:var(--fg2);font-size:15px}
+
+footer{padding-block:32px 48px;border-top:1px solid var(--stroke);color:var(--fg3);font-size:13px;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}
+
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <svg viewBox="390 420 1430 360" role="img" aria-label="Barte"><path fill="currentColor" d="M644.7,617.3c-4.3-6.7-12.1-10.7-20.6-10.7h-61.7l72.4-163.5c3.3-7.4,2.6-15.5-1.9-22.4-5.1-7.9-14.2-12.6-24.3-12.6h-122.8c-19,0-35.7,10.2-42.7,25.9l-67.8,153.2c-2.9,6.5-2.300,13.6,1.6,19.6,4.4,6.800,12.3,10.9,21.1,10.9h60l-74,167.2c-2.9,6.6-2.3,13.9,1.7,20.1,4.6,7,12.7,11.2,21.7,11.2h125.4c20.7,0,38.9-11.1,46.5-28.2l67.1-151.6c2.8-6.3,2.2-13.3-1.6-19.2ZM405.7,602.8c-9.7,0-15.6-7.9-12.5-14.8l67.8-145.6c5.1-11.5,18.2-19.3,32.5-19.3h80.1c9.7,0,15.6,7.9,12.5,14.8l-67.4,144.6c-5.4,12.1-19,20.2-34.1,20.2h-78.9ZM628.5,635.7l-67.1,143.9c-5.7,12.9-20.3,21.6-36.4,21.6h-78.1c-9.4,0-14.9-7.7-12-14.2l70.3-151.1c3.8-8.6,13.6-14.4,24.4-14.4h86.8c9.4,0,14.9,7.7,12,14.2Z"/><path fill="currentColor" d="M835.2,454.7v111.9c8.8-11.7,19-20.5,30.5-26.8,11.5-6.1,25-9.2,40.3-9.2s29.7,2.9,41.5,8.6c11.7,5.7,21.3,13.7,29.1,23.9,7.6,10.2,13.5,22.5,17.2,37,3.9,14.5,5.9,30.3,5.9,47.7s-2.3,34.6-6.8,49.3c-4.5,14.7-11.1,27.2-19.6,37.4-8.6,10.2-18.8,18.2-30.7,23.7-11.9,5.5-25.4,8.4-40.1,8.4s-25.8-2.5-37.2-7.6c-11.3-5.1-21.7-13.7-31.1-25.6v26.4h-46.9v-305.1h48.3l-.4.2ZM834.8,655.9c.2,14.3,2.1,26,5.3,35,3.3,9.2,7.6,16.4,12.9,21.7,5.3,5.5,11.3,9.2,18.2,11.1,6.8,2,13.9,2.9,21.3,2.9s15.5-1.4,22.3-4.3c6.8-2.9,12.9-7.2,18-13.5,5.1-6.1,9.2-14.1,11.9-24.1,2.9-10,4.3-22.3,4.3-36.8s-1.6-25.8-4.5-35.6c-2.9-9.8-6.8-17.8-11.7-23.9-4.9-6.1-10.6-10.6-17.2-13.5-6.6-2.9-13.7-4.3-20.7-4.3-10.6,0-19.6,1.8-27.2,5.1-7.6,3.3-13.7,8.2-18.6,14.5-4.9,6.3-8.4,13.7-10.8,22.5-2.3,8.6-3.3,18.4-3.3,28.8v14.1l-.2.2ZM1182.1,730.7c-8.2,10-18.4,18.2-30.3,24.8-11.9,6.5-26.4,9.8-43.6,9.8s-20.3-1.4-29.5-4.1c-9.2-2.7-17-6.8-23.7-12.1-6.6-5.5-11.9-12.3-15.8-20.7-3.9-8.4-5.7-18.4-5.7-29.7s3.3-27.8,10.2-37.4c6.8-9.6,15.6-17,26.8-22.5,11-5.5,23.3-9.2,37-11.3,13.7-2.2,27.4-3.5,41.1-4.1l32.9-1.8v-9.4c0-16.8-4.1-28.4-12.1-34.8-8.2-6.5-18.8-9.6-31.9-9.6s-26.2,2.5-33.4,7.6c-7.2,5.1-12.1,12.5-14.3,22.3l-44.4-4.7c3.9-21.7,13.9-37.6,29.5-47.3,15.6-10,37.2-14.9,64.5-14.9s32.3,2.3,43.8,6.8c11.5,4.5,20.7,10.8,27.6,18.8,6.8,8,11.5,17.4,14.3,28.4,2.7,11,4.1,23.1,4.1,36.2v138.9h-46.5v-29.1h-.4ZM1150,656c-14.5.8-26.2,2.3-35.2,4.7-9,2.3-15.8,5.3-20.7,8.8-4.9,3.5-8,7.6-9.6,12.3-1.6,4.7-2.4,9.8-2.4,15.3,0,9.8,3.1,17.2,9.2,22.7,6.1,5.5,15.3,8.2,27.2,8.2,21.3,0,37.2-5.5,47.5-16.2,10.2-10.8,15.5-25.4,15.5-44v-12.9l-31.1,1.4-.4-.2ZM1329,537.6v32.9c7.6-11.7,17-20.7,27.8-27,10.8-6.3,22.3-9.4,34.6-9.4s9,0,12.1.4c3.3.2,6.5.8,9.6,1.4l-5.5,44.4c-3.1-.8-6.6-1.4-10.2-1.8-3.7-.2-7.6-.4-11.5-.4-9.2,0-17,1.6-23.9,4.5-6.8,2.9-12.5,6.8-17.2,11.7-4.7,4.9-8.2,10.4-10.8,16.4-2.3,6.1-3.7,12.3-3.7,18.6v130.3h-48.3v-222.2h46.9v.2ZM1436.8,575.9v-38.5h35v-59.8h48.3v59.8h55.2v38.5h-55.2v116.2c0,11.3,2.3,19.6,7,24.8,4.7,5.1,11.5,7.6,20.7,7.6s9.4-.2,13.9-.8c4.5-.6,8.8-1.6,13.1-2.9l7.2,36.4c-13.7,4.5-28.6,6.8-44.4,6.8-24.4,0-41.7-6.3-51.2-19-9.8-12.7-14.5-31.7-14.5-57.1v-111.9h-35l-.2-.2ZM1806.8,693.9c-3.9,23.1-13.9,40.9-29.5,53.6-15.6,12.7-38.1,19-67.500,19s-62.2-10.2-80.6-30.5c-18.4-20.3-27.6-49.1-27.6-86.1s2.5-36,7.8-50.9c5.3-14.9,12.7-27.2,22.3-37.4,9.6-10.2,20.9-17.8,34.2-23.1,13.3-5.3,27.8-7.8,43.8-7.8s31.9,2.5,44.4,7.8c12.5,5.3,22.9,12.7,31.1,22.3,8.2,9.6,14.5,20.9,18.4,34.2,3.9,13.3,6.1,28,6.1,44.2v21.3h-159.4c.6,20.1,5.700,36.6,15.5,49.1,9.6,12.5,24.4,18.8,44,18.8s27-2.9,34.6-9c7.6-6.1,12.9-14.5,15.4-25.6h46.9ZM1762.4,626.8c0-18.2-4.3-32.7-12.9-43.2-8.6-10.6-22.3-15.8-41.1-15.8s-31.7,5.3-41.1,16c-9.4,10.8-14.9,25-16.2,43h111.3Z"/></svg>
+    <span class="tag">Desafio Barte AI · material de apoio</span>
+  </header>
+
+  <div class="hero">
+    <span class="over brand">Pagamentos em 10 minutos</span>
+    <h1>Um aluno paga R$ 1.000 no cartão. <em>Seis</em> empresas participam.</h1>
+    <p class="lede">Do clique em “pagar” até o dinheiro cair na conta da loja, a venda passa por uma corrente de empresas. Esta página é um mapa rápido de quem é quem. O resto é com vocês.</p>
+  </div>
+
+  <!-- ELENCO -->
+  <section id="elenco">
+    <div class="sec-head">
+      <span class="over">1 · O elenco</span>
+      <h2>Quem participa de um pagamento com cartão</h2>
+      <p>O conjunto de regras que faz um cartão funcionar em qualquer loja se chama <b>arranjo de pagamento</b>. Estes são os papéis dentro dele.</p>
+    </div>
+    <div class="cast">
+      <article class="card">
+        <div class="who"><span class="dot" style="background:var(--blue)"></span><h3>Portador</h3></div>
+        <span class="aka">o cliente que paga</span>
+        <p class="what">Quem tem o cartão e faz a compra. Não sabe (nem precisa saber) quantas empresas estão por trás.</p>
+        <div class="row"><span>Exemplo</span><span>Um aluno pagando o intercâmbio</span></div>
+        <div class="row"><span>Paga ou ganha</span><span>Paga o preço da compra. Não paga a taxa da loja.</span></div>
+      </article>
+      <article class="card">
+        <div class="who"><span class="dot" style="background:var(--green)"></span><h3>Lojista</h3></div>
+        <span class="aka">estabelecimento comercial</span>
+        <p class="what">Quem vende e quer receber. Contrata alguém para aceitar cartão e Pix no seu site ou maquininha.</p>
+        <div class="row"><span>Exemplo</span><span>Agência de intercâmbio, escola de idiomas</span></div>
+        <div class="row"><span>Paga ou ganha</span><span>Paga o <b>MDR</b>, a taxa descontada de cada venda</span></div>
+      </article>
+      <article class="card sub">
+        <span class="pill">foco do case</span>
+        <div class="who"><span class="dot" style="background:var(--brand)"></span><h3>Subadquirente</h3></div>
+        <span class="aka">subcredenciador · facilitador de pagamento</span>
+        <p class="what">Fica entre o lojista e a adquirente. Cadastra o lojista, oferece o checkout, recebe o dinheiro da adquirente e repassa ao lojista, descontando sua taxa.</p>
+        <div class="row"><span>Exemplos</span><span>PayPal, e o PagSeguro no início da operação</span></div>
+        <div class="row"><span>Paga ou ganha</span><span>Cobra uma taxa do lojista pelo serviço</span></div>
+      </article>
+      <article class="card">
+        <div class="who"><span class="dot" style="background:var(--ink)"></span><h3>Adquirente</h3></div>
+        <span class="aka">credenciador</span>
+        <p class="what">A empresa que se conecta às bandeiras e garante o pagamento ao seu cliente (lojista ou subadquirente). Processa a transação e faz a liquidação.</p>
+        <div class="row"><span>Exemplos</span><span>Cielo, Rede, Getnet, Stone</span></div>
+        <div class="row"><span>Paga ou ganha</span><span>Cobra uma taxa de quem atende (lojista ou subadquirente)</span></div>
+      </article>
+      <article class="card">
+        <div class="who"><span class="dot" style="background:var(--purple)"></span><h3>Bandeira</h3></div>
+        <span class="aka">instituidor do arranjo</span>
+        <p class="what">Dona das regras e da rede que liga adquirentes e emissores. Não empresta dinheiro e não emite cartão: define como tudo funciona.</p>
+        <div class="row"><span>Exemplos</span><span>Visa, Mastercard, Elo, Amex, Hipercard</span></div>
+        <div class="row"><span>Paga ou ganha</span><span>Cobra uma tarifa pequena de emissores e adquirentes pelo uso da rede</span></div>
+      </article>
+      <article class="card">
+        <div class="who"><span class="dot" style="background:var(--orange)"></span><h3>Emissor</h3></div>
+        <span class="aka">o banco do cartão</span>
+        <p class="what">Quem deu o cartão ao portador. Aprova ou recusa a compra (limite, fraude) e cobra o cliente na fatura.</p>
+        <div class="row"><span>Exemplos</span><span>Nubank, Itaú, Bradesco, Inter</span></div>
+        <div class="row"><span>Paga ou ganha</span><span>Fica com a <b>tarifa de intercâmbio</b>, a maior fatia da taxa</span></div>
+      </article>
+    </div>
+
+    <div class="cast" style="margin-top:14px">
+      <article class="card">
+        <div class="who"><span class="dot" style="background:var(--fg3)"></span><h3>Banco liquidante</h3></div>
+        <span class="aka">quem move o dinheiro de verdade</span>
+        <p class="what">A autorização é só uma mensagem. O dinheiro anda depois, na <b>liquidação</b>, por uma câmara central (a Núclea, antiga CIP). Quem não tem conta no Banco Central contrata um banco liquidante para pagar e receber nessa grade em seu nome.</p>
+        <div class="row"><span>Na prática</span><span>Grandes bancos prestam esse serviço para adquirentes e subadquirentes</span></div>
+      </article>
+      <article class="card">
+        <div class="who"><span class="dot" style="background:var(--fg3)"></span><h3>Domicílio bancário</h3></div>
+        <span class="aka">a conta onde o dinheiro cai</span>
+        <p class="what">Não é uma empresa, é um endereço: a conta bancária indicada para receber os valores da liquidação. A subadquirente tem a dela; cada lojista tem a sua.</p>
+        <div class="row"><span>Na prática</span><span>Aparece no extrato como TED ou crédito vindo da adquirente</span></div>
+      </article>
+      <article class="card">
+        <div class="who"><span class="dot" style="background:var(--fg3)"></span><h3>Banco Central</h3></div>
+        <span class="aka">o juiz do campo</span>
+        <p class="what">Autoriza e fiscaliza os arranjos e as instituições de pagamento. Também é dono do arranjo do Pix, por isso o Pix não tem bandeira nem emissor de cartão.</p>
+        <div class="row"><span>Na prática</span><span>Define, por exemplo, quando a subadquirente precisa entrar na liquidação centralizada</span></div>
+      </article>
+    </div>
+  </section>
+
+  <!-- FLUXO -->
+  <section id="fluxo">
+    <div class="sec-head">
+      <span class="over">2 · Como eles se conectam</span>
+      <h2>Uma corrente, duas viagens</h2>
+      <p>Toda venda com cartão passa pela mesma corrente duas vezes: primeiro a mensagem, depois o dinheiro. No caminho, cada elo fica com um pedaço da taxa que o lojista paga.</p>
+    </div>
+    <div class="flow-box">
+      <div class="chain static">
+        <div class="node"><span class="ic">cliente</span><span class="nm">Portador</span></div>
+        <div class="node"><span class="ic">loja</span><span class="nm">Lojista</span></div>
+        <div class="node hot"><span class="ic">sub</span><span class="nm">Subadquirente</span></div>
+        <div class="node"><span class="ic">credenciador</span><span class="nm">Adquirente</span></div>
+        <div class="node"><span class="ic">rede</span><span class="nm">Bandeira</span></div>
+        <div class="node"><span class="ic">banco do cartão</span><span class="nm">Emissor</span></div>
+      </div>
+      <div class="lanes">
+        <div class="lane msg"><b>Autorização</b><span>a pergunta “pode?” vai até o emissor e volta</span><em>segundos</em></div>
+        <div class="lane money"><b>Liquidação</b><span>o dinheiro faz o caminho de volta até o lojista</span><em>dias depois</em></div>
+      </div>
+      <p class="flow-note">No Pix a corrente é mais curta: não tem bandeira nem emissor de cartão.</p>
+    </div>
+  </section>
+
+  <!-- POR QUE -->
+  <section id="porque">
+    <div class="sec-head">
+      <span class="over">3 · Por que existe subadquirente</span>
+      <h2>Se a adquirente já faz tudo, por que mais um intermediário?</h2>
+      <p>Porque fechar contrato direto com uma adquirente dá trabalho e custa caro para um lojista pequeno ou de nicho. A subadquirente junta muitos lojistas e entrega uma solução pronta: cadastro rápido, checkout e integrações feitos para aquele mercado.</p>
+    </div>
+  </section>
+
+  <!-- NAO CONFUNDA -->
+  <section id="confusoes">
+    <div class="sec-head">
+      <span class="over">4 · Não confunda</span>
+      <h2>Três trocas comuns</h2>
+    </div>
+    <div class="notlist">
+      <div class="not"><h3>Gateway não é subadquirente</h3><p>O gateway só transporta a mensagem até a adquirente. Não recebe nem repassa dinheiro. A subadquirente recebe o dinheiro e paga o lojista.</p></div>
+      <div class="not"><h3>Bandeira não é banco</h3><p>A Visa não aprova sua compra nem te cobra fatura. Quem faz isso é o emissor. A bandeira é a rede e o livro de regras.</p></div>
+      <div class="not"><h3>Aprovado não é pago</h3><p>A venda aprovada em 2 segundos é uma promessa. O dinheiro só chega na liquidação, dias ou semanas depois.</p></div>
+    </div>
+  </section>
+
+  <!-- CASE -->
+  <section id="case" style="border-top:0">
+    <div class="case">
+      <span class="over">5 · No case</span>
+      <h2>Quem é quem na Tarvo</h2>
+      <p>Só os papéis. As regras de como a Tarvo cobra, fatura e trata exceções não estão aqui.</p>
+      <div class="map-wrap">
+        <table class="map">
+          <thead><tr><th>No case</th><th>Papel</th><th>O que faz</th></tr></thead>
+          <tbody>
+            <tr><td>Alunos</td><td><span class="role">Portador</span></td><td>Pagam o intercâmbio ou o curso com cartão ou Pix.</td></tr>
+            <tr><td>~25 lojistas</td><td><span class="role">Lojista</span></td><td>Agências de intercâmbio, escolas de idiomas e operadoras de turismo estudantil.</td></tr>
+            <tr><td>Tarvo</td><td><span class="role hot">Subadquirente</span></td><td>Linha de checkout: aceita os pagamentos dos alunos para os lojistas e fica com uma taxa.</td></tr>
+            <tr><td>Orbe</td><td><span class="role">Adquirente</span></td><td>Processa as transações da Tarvo e manda o relatório de cada uma.</td></tr>
+            <tr><td>Visa, Master, Elo, Amex, Hipercard</td><td><span class="role">Bandeiras</span></td><td>Aparecem por transação no relatório da Orbe.</td></tr>
+            <tr><td>Bancos Aurora e Meridiano</td><td><span class="role">Contas da Tarvo</span></td><td>Onde o dinheiro da Tarvo entra e sai. Os extratos mostram cada movimento.</td></tr>
+            <tr><td>Ponte Câmbio</td><td><span class="role">Parceiro de câmbio</span></td><td>Linha de remessas, fora do mundo do cartão: os lojistas pagam escolas no exterior em outra moeda, e a Tarvo ganha uma participação no spread (a margem embutida na taxa de câmbio).</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="warn">Dúvida sobre uma regra da Tarvo? <b>Pergunte ao financeiro no #tarvo-financeiro</b>, com o nome do time no começo. Pergunta específica recebe resposta específica.</p>
+    </div>
+  </section>
+
+  <!-- GLOSSARIO -->
+  <section id="glossario">
+    <div class="sec-head">
+      <span class="over">6 · Glossário de bolso</span>
+      <h2>As palavras que você vai ver nos arquivos</h2>
+    </div>
+    <div class="gloss">
+      <dl>
+        <div class="term"><dt>Arranjo de pagamento</dt><dd>O conjunto de regras de um meio de pagamento. Cada bandeira tem o seu; o Pix é o arranjo do Banco Central.</dd></div>
+        <div class="term"><dt>MDR</dt><dd>Merchant Discount Rate. A taxa percentual que o lojista paga sobre cada venda.</dd></div>
+        <div class="term"><dt>Intercâmbio</dt><dd>A parte da taxa que vai para o emissor do cartão. Nada a ver com intercâmbio de estudos.</dd></div>
+      </dl>
+      <dl>
+        <div class="term"><dt>Autorização</dt><dd>A pergunta “pode?” que vai até o emissor e volta com aprovado ou negado.</dd></div>
+        <div class="term"><dt>Liquidação</dt><dd>O momento em que o dinheiro realmente sai de uma conta e entra em outra.</dd></div>
+        <div class="term"><dt>D+1, D+30</dt><dd>Quantos dias depois da venda o dinheiro cai. D+1 é no dia seguinte.</dd></div>
+      </dl>
+    </div>
+  </section>
+
+  <footer>
+    <span>Desafio Barte AI · 17/10/2026</span>
+    <span>Dados do case Tarvo são fictícios. Taxas desta página são ilustrativas.</span>
+  </footer>
+</div>
+
+
+</body></html>
