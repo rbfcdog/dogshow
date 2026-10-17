@@ -609,6 +609,65 @@ def _check_source_scope() -> None:
     assert any("participação de 50%" in chunk["text"] for chunk in body)
     assert all(re.fullmatch(r".+:L\d+(-L\d+)?", chunk["source_id"]) for chunk in chunks)
     assert len({chunk["source_id"] for chunk in chunks}) == len(chunks)
+    _check_late_adjustments_role()
+    _check_duplicate_attachment_chunks()
+
+
+def _unscoped(path: Path) -> Path:
+    return path.resolve()
+
+
+def _check_late_adjustments_role() -> None:
+    """06_orbe_ajustes_tardios é obrigatório, único e com o layout do relatório 01."""
+    full = load_dataset(DATA_DIR)
+    late = [entry for entry in full.checkout if entry.source.file.startswith("06_orbe_ajustes_tardios_")]
+    assert len(late) == 14 and len(full.checkout) == 1957
+    with TemporaryDirectory() as directory, \
+            patch("src.infrastructure.readers.require_data_dir", _unscoped), \
+            patch("src.infrastructure.readers.require_source_file", _unscoped):
+        copy = Path(directory) / "pacote"
+        shutil.copytree(DATA_DIR, copy)
+        adjustments = copy / "06_orbe_ajustes_tardios_set2026.csv"
+        shutil.copy(adjustments, copy / "06_orbe_ajustes_tardios_set2026_v2.csv")
+        _expect_error(DataPackError, "checkout_adjustments: esperado exatamente um arquivo 06_orbe_ajustes_tardios_*.csv; encontrados 2",
+            lambda: load_dataset(copy))
+        (copy / "06_orbe_ajustes_tardios_set2026_v2.csv").unlink()
+        adjustments.write_text("id;outro\n", encoding="utf-8")
+        _expect_error(DataPackError, "Cabeçalho", lambda: load_dataset(copy))
+        adjustments.unlink()
+        _expect_error(DataPackError, "checkout_adjustments: esperado exatamente um arquivo 06_orbe_ajustes_tardios_*.csv; encontrados 0",
+            lambda: load_dataset(copy))
+
+
+def _check_duplicate_attachment_chunks() -> None:
+    """Dois anexos XLSX de mesmo nome não podem gerar source_id repetido."""
+    from email.message import EmailMessage
+    from io import BytesIO
+
+    from openpyxl import Workbook
+
+    with TemporaryDirectory() as directory, \
+            patch("src.infrastructure.normalization_sources.require_data_dir", _unscoped), \
+            patch("src.infrastructure.normalization_sources.require_source_file", _unscoped):
+        folder = Path(directory)
+        message = EmailMessage()
+        message["Subject"] = "Relatórios"
+        message.set_content("Corpo com participação de 50%.")
+        for value in ("primeiro", "segundo"):
+            workbook = Workbook()
+            workbook.active.append([value])
+            stream = BytesIO()
+            workbook.save(stream)
+            message.add_attachment(stream.getvalue(), maintype="application",
+                subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet", filename="relatorio.xlsx")
+        (folder / "03_email.eml").write_bytes(message.as_bytes())
+        chunks = document_chunks(folder)
+        identifiers = [chunk["source_id"] for chunk in chunks]
+        assert len(identifiers) == len(set(identifiers)) == 3
+        texts = {chunk["source_id"]: chunk["text"] for chunk in chunks}
+        assert texts["03_email.eml!relatorio.xlsx!Sheet:L1"] == '["primeiro"]'
+        assert texts["03_email.eml!relatorio.xlsx#anexo2!Sheet:L1"] == '["segundo"]'
+        assert any(key.startswith("03_email.eml:MIME:text/plain:") for key in texts)
 
 
 def _run_cli(argv: list[str]) -> tuple[int, str]:
@@ -685,7 +744,7 @@ def _check_reference_pipeline() -> None:
         assert len(joined) == len(dataset.checkout)
         atlas = [row for row in joined if row["ec"] in UNBOUND_ECS]
         assert Counter(row["ec"] for row in atlas) == {
-            "1038867654": 85, "1043396662": 75, "1043300981": 73, "1076801732": 57,
+            "1038867654": 86, "1043396662": 75, "1043300981": 73, "1076801732": 57,
         }
         assert all(row["status"] == "PENDENTE" and row["contrato"] is None and row["cnpj"] is None
             and row["taxa_contratada_fracao"] is None for row in atlas)
@@ -696,7 +755,9 @@ def _check_reference_pipeline() -> None:
             "checkout_rows": len(joined), "joined": len(joined) - len(atlas),
             "unresolved_rows": len(atlas), "rca_cases": 4, "human_cases": 4,
         }
-        assert report["summary"]["joined"] == 1653 and report["summary"]["unresolved_rows"] == 290
+        # 1943 linhas do 01 + 14 do 06 (ajustes tardios) = 1957; 291 sem contrato.
+        assert len(joined) == 1957
+        assert report["summary"]["joined"] == 1666 and report["summary"]["unresolved_rows"] == 291
 
         assert {path.name for path in output.iterdir()} == {
             "referencias.json", "rca.json", "escaladas_humanas.json",
@@ -865,7 +926,7 @@ def _check_reference_pipeline() -> None:
             assert inferred["decisions"][source_id]["proposal"]["establishment_code"] == ec
             assert inferred["decisions"][source_id]["context"]["focal"]["source_id"] == f"orbe:EC:{ec}"
         assert not investigations["1076801732"]["resolved"] and investigations["1076801732"]["applied_source_ids"] == []
-        assert inferred["summary"] == {**report["summary"], "joined": 1886, "unresolved_rows": 57, "human_cases": 1}
+        assert inferred["summary"] == {**report["summary"], "joined": 1900, "unresolved_rows": 57, "human_cases": 1}
         inferred_escalations = json.loads((inferred_output / "escaladas_humanas.json").read_text(encoding="utf-8"))
         assert [item["ec"] for item in inferred_escalations] == ["1076801732"]
         with (inferred_output / "contratos_normalizados.csv").open(encoding="utf-8", newline="") as stream:

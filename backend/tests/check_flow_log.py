@@ -58,12 +58,12 @@ def check_incremental_log() -> None:
         assert not any(r["details"]["resolved"] or r["details"]["applied_source_ids"] for r in concluded)
         escalations = {r["details"]["ec"]: r for r in records if r["event"] == "CASO_ESCALADO"}
         assert {ec: r["details"]["affected_rows"] for ec, r in escalations.items()} == {
-            "1038867654": 85, "1043300981": 73, "1043396662": 75, "1076801732": 57,
+            "1038867654": 86, "1043300981": 73, "1043396662": 75, "1076801732": 57,
         }
         assert all(r["level"] == "WARNING" and r["details"]["responsible"] == "Comercial / Financeiro"
             for r in escalations.values())
         summary = next(r for r in records if r["event"] == "RESUMO")["details"]
-        assert summary == report["summary"] and summary["human_cases"] == 4 and summary["unresolved_rows"] == 290
+        assert summary == report["summary"] and summary["human_cases"] == 4 and summary["unresolved_rows"] == 291
 
         evidence_output = output / "evidencia"
         normalize_reference(dataset, root / "dados_tarvo", evidence_output, _EvidenceInterpreter())

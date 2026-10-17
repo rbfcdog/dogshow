@@ -124,11 +124,15 @@ def document_chunks(data_dir: Path) -> list[dict]:
             body = message.get_body(preferencelist=("plain",))
             content = body.get_content() if body else ""
             locator = "MIME:text/plain:"
-            for attachment in message.iter_attachments():
+            seen_names: dict[str, int] = {}
+            for index, attachment in enumerate(message.iter_attachments(), 1):
                 name = attachment.get_filename() or ""
                 if not name.lower().endswith(".xlsx"):
                     continue
                 name = name.replace("\\", "/").rsplit("/", 1)[-1]
+                seen_names[name] = seen_names.get(name, 0) + 1
+                if seen_names[name] > 1:
+                    name = f"{name}#anexo{index}"
                 with BytesIO(attachment.get_payload(decode=True)) as payload:
                     workbook = load_workbook(payload, read_only=True, data_only=True, keep_links=False)
                     try:
@@ -146,6 +150,9 @@ def document_chunks(data_dir: Path) -> list[dict]:
         for start in range(0, len(lines), 12):
             chunks.append({"source_id": f"{path.name}:{locator}L{start + 1}-L{min(start + 12, len(lines))}",
                 "file": path.name, "text": "\n".join(lines[start:start + 12])})
+    identifiers = [chunk["source_id"] for chunk in chunks]
+    if len(identifiers) != len(set(identifiers)):
+        raise ValueError("Trechos documentais com source_id repetido; evidência ambígua.")
     return chunks
 
 

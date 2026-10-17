@@ -48,6 +48,8 @@ _ROLES = {
     "accounts": "04_plano_de_contas_fenix_erp*.csv",
     "aurora": "05a_extrato_banco_aurora_*.csv",
     "meridiano": "05b_extrato_banco_meridiano_*.ofx",
+    # Ajustes tardios Orbe (mesmo layout do 01): parte obrigatória do checkout da competência.
+    "checkout_adjustments": "06_orbe_ajustes_tardios_*.csv",
 }
 _CHECKOUT_HEADER = (
     "id_transacao", "data_movimento", "cod_estabelecimento", "nome_estabelecimento",
@@ -412,7 +414,7 @@ def _partner_terms(path: Path) -> PartnerTerms:
 
 def load_dataset(data_dir: Path) -> Dataset:
     files = _select_files(data_dir)
-    checkout = _checkout(files["checkout"])
+    checkout = _checkout(files["checkout"]) + _checkout(files["checkout_adjustments"])
     contracts = _contracts(files["contracts"])
     remittances = _remittances(files["email"])
     accounts = _accounts(files["accounts"])
