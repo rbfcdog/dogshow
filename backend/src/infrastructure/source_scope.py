@@ -7,7 +7,7 @@ SOURCE_SCOPE = "dados_tarvo_only_v2"
 
 
 def require_data_dir(path: Path) -> Path:
-    if DATA_ROOT.is_symlink() or DATA_ROOT.is_junction() or path.resolve() != DATA_ROOT.absolute():
+    if path.is_symlink() or path.is_junction() or DATA_ROOT.is_symlink() or DATA_ROOT.is_junction() or path.resolve() != DATA_ROOT.absolute():
         raise DataPackError("Fonte de dados não permitida: use apenas dados_tarvo/ deste projeto.")
     if not path.is_dir():
         raise DataPackError("Diretório dados_tarvo/ inexistente.")

@@ -6,6 +6,7 @@ import re
 from src.application.banking import classify_banks
 from src.application.checkout import close_checkout
 from src.application.remittances import close_remittances
+from src.domain.banking_reference import ReviewedBankDecision
 from src.domain.closing import ClosingResult, Pending
 from src.domain.models import Dataset
 from src.domain.policies import ZERO, period_key, in_period, output_id
@@ -71,10 +72,15 @@ def validate_closing(result: ClosingResult, dataset: Dataset) -> None:
             raise RuntimeError("Confiança de classificação fora do intervalo permitido.")
 
 
-def close_month(dataset: Dataset, period: date) -> ClosingResult:
+def close_month(dataset: Dataset, period: date, *,
+    bank_decisions: dict[str, ReviewedBankDecision] | None = None) -> ClosingResult:
     if period.day != 1:
         raise ValueError("A competência deve ser o primeiro dia do mês.")
-    parts = (close_checkout(dataset, period), close_remittances(dataset, period), classify_banks(dataset, period))
+    parts = (
+        close_checkout(dataset, period),
+        close_remittances(dataset, period),
+        classify_banks(dataset, period, reviewed_decisions=bank_decisions),
+    )
     policy_pending = []
     for name, entries, date_field in (("CHECKOUT", dataset.checkout, "occurred_on"),
         ("REMESSA", dataset.remittances, "contracted_on")):

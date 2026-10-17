@@ -3,6 +3,7 @@ from datetime import date
 from decimal import Decimal
 from unicodedata import combining, normalize
 
+from src.domain.banking_reference import ReviewedBankDecision
 from src.domain.closing import ClassifiedMovement, ClosingPart, Pending, trace
 from src.domain.models import Account, BankEntry, Dataset
 from src.domain.policies import in_period, money, output_id
@@ -68,12 +69,44 @@ def _classify(entry: BankEntry) -> tuple[str, Decimal, str]:
     return "", Decimal("0"), "Descrição sem regra evidenciada no pacote: contrapartida não identificada, sem presumir conta ou receita."
 
 
-def classify_banks(dataset: Dataset, period: date) -> ClosingPart:
+def classify_banks(dataset: Dataset, period: date, *,
+    reviewed_decisions: dict[str, ReviewedBankDecision] | None = None) -> ClosingPart:
     entries = tuple(entry for entry in dataset.banks if in_period(entry.occurred_on, period))
     accounts: dict[str, list[Account]] = defaultdict(list)
     for account in dataset.accounts:
         accounts[account.code].append(account)
-    classifications = tuple(_classify(entry) for entry in entries)
+    original_classifications = tuple(_classify(entry) for entry in entries)
+    classifications = list(original_classifications)
+    decisions = reviewed_decisions or {}
+    identifiers = {
+        output_id("movimento", period, entry.bank, entry.source.file, entry.source.ref)
+        for entry in entries
+    }
+    if set(decisions) - identifiers:
+        raise ValueError("Referência bancária contém movimento fora da competência ou do pacote.")
+    methods: dict[str, str] = {}
+    for index, entry in enumerate(entries):
+        identifier = output_id("movimento", period, entry.bank, entry.source.file, entry.source.ref)
+        decision = decisions.get(identifier)
+        if decision is None:
+            continue
+        if (
+            decision.movement_id != identifier or not decision.reviewed_by.strip()
+            or not decision.reference_id or not decision.evidence_ids or not decision.reason.strip()
+        ):
+            raise ValueError("Decisão bancária sem revisão, origem ou justificativa válida.")
+        candidates = accounts.get(decision.account_code, [])
+        if len(candidates) != 1 or candidates[0].kind != "ANALITICA" or not candidates[0].posting_allowed:
+            raise ValueError("Decisão bancária revisada aponta para conta inexistente ou não lançável.")
+        original_code, original_confidence, original_rule = original_classifications[index]
+        if original_code and original_confidence == Decimal("1") and original_code != decision.account_code:
+            raise ValueError("Decisão de IA não pode substituir conta resolvida por regra determinística.")
+        rule = (
+            f"{original_rule} Classificação IA revisada por {decision.reviewed_by}: {decision.reason} "
+            f"Referência {decision.reference_id}; evidências: {', '.join(decision.evidence_ids)}."
+        )
+        classifications[index] = (decision.account_code, Decimal("0.80"), rule)
+        methods[identifier] = "IA"
     transfers: dict[tuple[date, Decimal], list[BankEntry]] = defaultdict(list)
     for entry, (code, _, _) in zip(entries, classifications):
         if code == "1.1.09.001":
@@ -81,7 +114,8 @@ def classify_banks(dataset: Dataset, period: date) -> ClosingPart:
     movements = []
     pending = []
     traces = []
-    for entry, (code, confidence, rule) in zip(entries, classifications):
+    for index, (entry, (code, confidence, rule)) in enumerate(zip(entries, classifications)):
+        baseline_code = original_classifications[index][0]
         proposed_code = code
         amount = money(entry.amount)
         identifier = output_id("movimento", period, entry.bank, entry.source.file, entry.source.ref)
@@ -121,7 +155,7 @@ def classify_banks(dataset: Dataset, period: date) -> ClosingPart:
                 ))
         movements.append(ClassifiedMovement(
             identifier, entry.bank, entry.source.ref, entry.occurred_on.isoformat(),
-            entry.description, amount, code, "REGRA", confidence,
+            entry.description, amount, code, methods.get(identifier, "REGRA"), confidence,
         ))
         traces.append(trace(identifier, entry.source, amount, rule))
         for kind, reason in issues:

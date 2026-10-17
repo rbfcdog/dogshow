@@ -14,7 +14,7 @@ from src.domain.policies import contract_candidates
 from src.infrastructure.flow_log import FlowLog
 from src.infrastructure.source_scope import SOURCE_SCOPE
 from src.infrastructure.normalization_sources import (
-    contract_id, contract_rows, document_chunks, input_manifest, json_text,
+    contract_id, contract_rows, document_chunks, email_chunks, input_manifest, json_text,
     orbe_candidates, related_rows, retrieve_documents,
 )
 
@@ -34,7 +34,10 @@ def explicit_bounds(validity: str | None) -> tuple[date | None, date | None]:
     return (None, day) if (match[1] or "").lower() == "até " else (day, None)
 
 
-def context_for(focal: dict, rows: list[dict], dataset: Dataset, threshold: float, samples: int, limit: int) -> dict:
+def context_for(
+    focal: dict, rows: list[dict], dataset: Dataset, threshold: float, samples: int, limit: int,
+    chunks: list[dict] | None = None,
+) -> dict:
     candidates = related_rows(focal, rows, threshold, limit)
     candidates = [focal] + [r for r in candidates if r["source_id"] != focal["source_id"]][:limit - 1]
     return {
@@ -44,6 +47,14 @@ def context_for(focal: dict, rows: list[dict], dataset: Dataset, threshold: floa
         "selection": {"fuzzy_threshold": threshold, "samples_per_ec": samples,
             "max_related_contracts": limit, "orbe_has_cnpj_column": False},
     }
+    if chunks:
+        docs = retrieve_documents(chunks, focal, focal.get("establishment_code") or "")
+        emails = [c for c in chunks if c["file"].endswith(".eml")]
+        if emails and not any(d["file"].endswith(".eml") for d in docs):
+            docs = docs + emails[:4]
+        context["documents"] = docs
+        context["searched_documents"] = sorted({c["file"] for c in chunks})
+    return context
 
 
 def evidence_ids(context: dict) -> set[str]:

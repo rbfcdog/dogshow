@@ -148,6 +148,48 @@ def document_chunks(data_dir: Path) -> list[dict]:
                 "file": path.name, "text": "\n".join(lines[start:start + 12])})
     return chunks
 
+def email_chunks(data_dir: Path) -> list[dict]:
+    chunks = []
+    if not data_dir.exists():
+        return chunks
+    for path in sorted(data_dir.glob("*.eml")):
+        try:
+            message = BytesParser(policy=policy.default).parsebytes(path.read_bytes())
+        except Exception:
+            continue
+        headers = []
+        for header in ("From", "To", "Cc", "Date", "Subject"):
+            if message[header]:
+                headers.append(f"{header}: {message[header]}")
+        if headers:
+            chunks.append({
+                "source_id": f"{path.name}:headers",
+                "file": path.name,
+                "text": "\n".join(headers),
+            })
+        body_parts = []
+        for part in message.walk():
+            if part.get_content_type() == "text/plain":
+                payload = part.get_payload(decode=True)
+                if payload:
+                    charset = part.get_content_charset() or "utf-8"
+                    body_parts.append(payload.decode(charset, errors="replace"))
+            elif part.get_content_type() == "text/html" and not body_parts:
+                payload = part.get_payload(decode=True)
+                if payload:
+                    charset = part.get_content_charset() or "utf-8"
+                    raw = payload.decode(charset, errors="replace")
+                    body_parts.append(re.sub(r"<[^>]+>", " ", raw))
+        for part_idx, body in enumerate(body_parts, 1):
+            paragraphs = [p.strip() for p in body.split("\n\n") if p.strip()]
+            for p_idx, paragraph in enumerate(paragraphs, 1):
+                chunks.append({
+                    "source_id": f"{path.name}:part{part_idx}:P{p_idx}",
+                    "file": path.name,
+                    "text": paragraph,
+                })
+    return chunks
+
 
 def retrieve_documents(chunks: list[dict], focal: dict, ec: str, limit: int = 24) -> list[dict]:
     terms = {focal["cnpj"], ec, normalize_name(focal["merchant"])} - {""}
@@ -156,6 +198,7 @@ def retrieve_documents(chunks: list[dict], focal: dict, ec: str, limit: int = 24
         plain = normalize_name(chunk["text"])
         digits = re.sub(r"\D", "", chunk["text"])
         score = sum(5 for term in terms if term in plain or term in digits)
+
         if score:
             ranked.append((-score, chunk["source_id"], chunk))
     return [item[-1] for item in sorted(ranked)[:limit]]

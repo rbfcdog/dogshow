@@ -34,6 +34,7 @@ from src.infrastructure.normalization_sources import (
     contract_id,
     contract_rows,
     document_chunks,
+    email_chunks,
     input_manifest,
     json_text,
     normalize_name,
@@ -891,6 +892,15 @@ def _check_reference_pipeline() -> None:
             lambda: load_reference(dataset, data_dir, path))
 
 
+def _check_email_evidence() -> None:
+    data_dir = Path(__file__).resolve().parents[2] / "dados_tarvo"
+    chunks = email_chunks(data_dir)
+    assert chunks
+    assert any(c["source_id"].endswith(":headers") and "relatorios@pontecambio.com.br" in c["text"] for c in chunks)
+    assert any("50%" in c["text"] and "spread" in c["text"] for c in chunks)
+    assert any("75.374.179/0001-46" in c["text"] for c in chunks)
+
+
 def check() -> None:
     _check_schemas()
     _check_candidates()
@@ -899,6 +909,7 @@ def check() -> None:
     _check_source_scope()
     _check_interpreter()
     _check_proposal_validation()
+    _check_email_evidence()
     _check_reference_pipeline()
 
 
