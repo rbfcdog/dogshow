@@ -3,7 +3,7 @@ import json
 import re
 from collections import defaultdict
 from dataclasses import replace
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
 
@@ -18,6 +18,7 @@ from src.infrastructure.normalization_sources import (
     json_text, orbe_candidates, partner_email_evidence, related_rows, remittance_candidates,
     retrieve_documents,
 )
+from src.infrastructure.slack_inbox import SlackInbox, find_inbox_file, parse_inbox
 
 
 class Interpreter(Protocol):
@@ -125,7 +126,8 @@ def validate_proposal(proposal: ContractProposal, context: dict, rows: list[dict
             raise ValueError("EC proposto já pertence a outro CNPJ explicitamente documentado.")
 
 
-def materialize(dataset: Dataset, decisions: dict[str, dict], rows: list[dict]) -> tuple[Dataset, list[dict]]:
+def materialize(dataset: Dataset, decisions: dict[str, dict], rows: list[dict],
+    inbox: SlackInbox | None = None) -> tuple[Dataset, list[dict]]:
     originals = {contract_id(c): c for c in dataset.contracts}
     merged: dict[str, tuple[Contract, dict]] = {}
     for source_id, record in sorted(decisions.items()):
@@ -136,29 +138,78 @@ def materialize(dataset: Dataset, decisions: dict[str, dict], rows: list[dict]) 
         if proposal.disposition != "UTILIZAVEL":
             continue
         raw = originals[source_id]
-        contract = replace(raw, establishment_code=proposal.establishment_code,
+        ec = proposal.establishment_code
+        evidence_ids = list(proposal.evidence_ids)
+        reason = proposal.reason
+        status = "INFERIDO" if ec and not raw.establishment_code else "DOCUMENTADO"
+
+        if inbox and not ec:
+            for binding_ec, binding in inbox.bindings.items():
+                if binding.cnpj == raw.cnpj:
+                    ec = binding_ec
+                    evidence_ids.append(binding.source_id)
+                    reason = f"{reason} {binding.reason}".strip()
+                    status = "CONFIRMADO_INBOX"
+                    break
+
+        contract = replace(raw, establishment_code=ec,
             validity_start=proposal_date(proposal.validity_start),
             validity_end=proposal_date(proposal.validity_end),
             structured_validity=True)
         signature = json_text({"cnpj": contract.cnpj, "ec": contract.establishment_code,
             "rates": contract.rates, "remittance_rate": contract.remittance_rate,
             "start": contract.validity_start, "end": contract.validity_end})
-        status = "INFERIDO" if contract.establishment_code and not raw.establishment_code else "DOCUMENTADO"
         if signature in merged:
             canonical = merged[signature][1]
             canonical["source_ids"].append(source_id)
-            canonical["evidence_ids"] = sorted(set(canonical["evidence_ids"]) | set(proposal.evidence_ids))
+            canonical["evidence_ids"] = sorted(set(canonical["evidence_ids"]) | set(evidence_ids))
         else:
             merged[signature] = contract, {"source_id": source_id, "source_ids": [source_id],
                 "merchant": contract.merchant, "cnpj": contract.cnpj, "establishment_code": contract.establishment_code,
                 "rates": contract.rates, "remittance_rate": contract.remittance_rate,
                 "validity_start": contract.validity_start.isoformat() if contract.validity_start else None,
                 "validity_end": contract.validity_end.isoformat() if contract.validity_end else None,
-                "status": status, "evidence_ids": proposal.evidence_ids, "reason": proposal.reason}
+                "status": status, "evidence_ids": sorted(set(evidence_ids)), "reason": reason}
+
+    if inbox and inbox.exemptions:
+        for cnpj, ex in inbox.exemptions.items():
+            matching_signatures = [sig for sig, (c, _) in merged.items() if c.cnpj == cnpj]
+            for sig in matching_signatures:
+                base_contract, base_canonical = merged[sig]
+                if ex.preserve_historical_sales and ex.start_date:
+                    hist_contract = replace(base_contract, validity_end=ex.start_date - timedelta(days=1))
+                    hist_sig = json_text({"cnpj": hist_contract.cnpj, "ec": hist_contract.establishment_code,
+                        "rates": hist_contract.rates, "remittance_rate": hist_contract.remittance_rate,
+                        "start": hist_contract.validity_start, "end": hist_contract.validity_end})
+                    merged[hist_sig] = hist_contract, {**base_canonical,
+                        "validity_end": hist_contract.validity_end.isoformat(),
+                        "reason": f"{base_canonical['reason']} Vigência anterior à isenção da caixa de entrada."}
+                exempt_rates = {k: ex.rate if k in ex.modalities else v for k, v in base_contract.rates.items()}
+                exempt_contract = replace(base_contract, rates=exempt_rates,
+                    validity_start=ex.start_date, validity_end=ex.end_date)
+                exempt_sig = json_text({"cnpj": exempt_contract.cnpj, "ec": exempt_contract.establishment_code,
+                    "rates": exempt_contract.rates, "remittance_rate": exempt_contract.remittance_rate,
+                    "start": exempt_contract.validity_start, "end": exempt_contract.validity_end})
+                merged[exempt_sig] = exempt_contract, {
+                    "source_id": f"{base_canonical['source_id']}#isencao",
+                    "source_ids": base_canonical["source_ids"],
+                    "merchant": exempt_contract.merchant,
+                    "cnpj": exempt_contract.cnpj,
+                    "establishment_code": exempt_contract.establishment_code,
+                    "rates": exempt_contract.rates,
+                    "remittance_rate": exempt_contract.remittance_rate,
+                    "validity_start": exempt_contract.validity_start.isoformat(),
+                    "validity_end": exempt_contract.validity_end.isoformat() if exempt_contract.validity_end else None,
+                    "status": "ISENTO_INBOX",
+                    "evidence_ids": sorted(set(base_canonical["evidence_ids"]) | {ex.source_id}),
+                    "reason": ex.reason,
+                }
+                del merged[sig]
+
     return replace(dataset, contracts=tuple(value[0] for value in merged.values())), [value[1] for value in merged.values()]
 
 
-def join_checkout(dataset: Dataset) -> list[dict]:
+def join_checkout(dataset: Dataset, inbox: SlackInbox | None = None) -> list[dict]:
     originals = {entry.source.ref: entry for entry in dataset.checkout}
     if len(originals) != len(dataset.checkout):
         raise ValueError("ID Orbe repetido; o join não pode sobrescrever operações.")
@@ -178,6 +229,8 @@ def join_checkout(dataset: Dataset) -> list[dict]:
             row["modalidade"] = key
             candidates = contract_candidates(dataset.contracts, on_date, establishment_code=entry.establishment_code)
             if len(candidates) != 1:
+                if inbox and entry.establishment_code in inbox.blocks:
+                    raise ValueError(inbox.blocks[entry.establishment_code].reason)
                 raise ValueError(f"Encontrados {len(candidates)} contratos aplicáveis; esperado um.")
             contract = candidates[0]
             if key not in contract.rates:
@@ -211,24 +264,36 @@ def validate_output_dir(data_dir: Path, output_dir: Path) -> None:
 
 def normalize_reference(dataset: Dataset, data_dir: Path, output_dir: Path,
     interpreter: Interpreter, *, samples: int = 5, threshold: float = 75, candidate_limit: int = 8,
-    log: FlowLog | None = None) -> dict:
+    log: FlowLog | None = None, inbox: SlackInbox | None = None,
+    inbox_path: Path | None = None) -> dict:
     validate_output_dir(data_dir, output_dir)
+    resolved_inbox = inbox
+    if resolved_inbox is None and inbox_path is not None:
+        resolved_inbox = parse_inbox(inbox_path)
     if log is None:
         with FlowLog(output_dir) as run_log:
             return _normalize_reference(dataset, data_dir, output_dir, interpreter,
-                samples=samples, threshold=threshold, candidate_limit=candidate_limit, log=run_log)
+                samples=samples, threshold=threshold, candidate_limit=candidate_limit, log=run_log, inbox=resolved_inbox)
     return _normalize_reference(dataset, data_dir, output_dir, interpreter,
-        samples=samples, threshold=threshold, candidate_limit=candidate_limit, log=log)
+        samples=samples, threshold=threshold, candidate_limit=candidate_limit, log=log, inbox=resolved_inbox)
 
 
 def _normalize_reference(dataset: Dataset, data_dir: Path, output_dir: Path,
-    interpreter: Interpreter, *, samples: int, threshold: float, candidate_limit: int, log: FlowLog) -> dict:
+    interpreter: Interpreter, *, samples: int, threshold: float, candidate_limit: int, log: FlowLog,
+    inbox: SlackInbox | None = None) -> dict:
     if samples < 1 or candidate_limit < 1 or not 0 <= threshold <= 100:
         raise ValueError("Limites de candidatos/amostras devem ser positivos e score entre 0 e 100.")
     output_dir.mkdir(parents=True, exist_ok=True)
     log.event("INGESTAO", "EXTRACAO_CONTRATUAL_INICIADA")
     rows = contract_rows(data_dir, dataset)
-    chunks = document_chunks(data_dir)
+    data_chunks = document_chunks(data_dir)
+    chunks = data_chunks + (inbox.chunks if inbox else [])
+    if inbox:
+        log.event("INGESTAO", "CAIXA_DE_ENTRADA_PROCESSADA",
+            source_file=inbox.source_file,
+            bindings=len(inbox.bindings),
+            exemptions=len(inbox.exemptions),
+            blocks=len(inbox.blocks))
     log.event("INGESTAO", "EXTRACAO_CONTRATUAL_CONCLUIDA", current_rows=sum(not r["historical"] for r in rows),
         historical_rows=sum(r["historical"] for r in rows), document_chunks=len(chunks))
     decisions: dict[str, dict] = {}
@@ -256,10 +321,10 @@ def _normalize_reference(dataset: Dataset, data_dir: Path, output_dir: Path,
             level="WARNING" if error else "INFO", source_id=focal["source_id"],
             disposition=proposal.disposition, ec=proposal.establishment_code,
             reason=proposal.reason, validation_error=error, evidence_ids=proposal.evidence_ids)
-    normalized, canonical = materialize(dataset, decisions, rows)
+    normalized, canonical = materialize(dataset, decisions, rows, inbox=inbox)
     log.event("NORMALIZACAO", "NORMALIZACAO_CONCLUIDA", canonical_rows=len(canonical))
     log.event("JOIN", "JOIN_INICIADO", checkout_rows=len(dataset.checkout))
-    joined = join_checkout(normalized)
+    joined = join_checkout(normalized, inbox=inbox)
     log.event("JOIN", "JOIN_CONCLUIDO", joined=sum(r["status"] == "OK" for r in joined),
         unresolved_by_ec={ec: len(problems) for ec, problems in unresolved_groups(joined).items()})
     investigations = []
@@ -282,7 +347,7 @@ def _normalize_reference(dataset: Dataset, data_dir: Path, output_dir: Path,
             "partner_email": partner_email_evidence(dataset),
             "bank_mentions": bank_candidates(focal, dataset, threshold, samples, candidates),
             "documents": retrieve_documents(chunks, focal, ec),
-            "searched_documents": sorted({c["file"] for c in chunks}),
+            "searched_documents": sorted({c["file"] for c in data_chunks}),
             "normalization_attempts": [n for n in normalizations if n["source_id"] in {r["source_id"] for r in candidates}],
         }
         log.event("RCA", "INVESTIGACAO_INICIADA", ec=ec, affected_rows=len(problems),
@@ -311,9 +376,9 @@ def _normalize_reference(dataset: Dataset, data_dir: Path, output_dir: Path,
                     applied.append(proposal.source_id)
                 except ValueError as failure:
                     rejected.append(str(failure))
-        normalized, canonical = materialize(dataset, decisions, rows)
+        normalized, canonical = materialize(dataset, decisions, rows, inbox=inbox)
         log.event("JOIN", "REJOIN_INICIADO", ec=ec, applied_source_ids=applied)
-        joined = join_checkout(normalized)
+        joined = join_checkout(normalized, inbox=inbox)
         log.event("JOIN", "REJOIN_CONCLUIDO", ec=ec,
             unresolved_rows=len(unresolved_groups(joined).get(ec, [])))
         investigations.append({"ec": ec, "context": context, "result": result.model_dump(),
@@ -380,7 +445,8 @@ def export_reference(output_dir: Path, report: dict, canonical: list[dict], join
         writer.writerows(joined)
 
 
-def load_reference(dataset: Dataset, data_dir: Path, reference_file: Path) -> Dataset:
+def load_reference(dataset: Dataset, data_dir: Path, reference_file: Path,
+    inbox: SlackInbox | None = None) -> Dataset:
     report = json.loads(reference_file.read_text(encoding="utf-8"))
     if report.get("version") != 2 or report.get("source_scope") != SOURCE_SCOPE:
         raise ValueError("Referência anterior ou fora do escopo dados_tarvo; gere uma nova normalização.")
@@ -418,4 +484,4 @@ def load_reference(dataset: Dataset, data_dir: Path, reference_file: Path) -> Da
         if any(json_text(saved.get(key)) != json_text(value) for key, value in fresh.items()):
             raise ValueError("Contexto de referência não corresponde às evidências atuais de dados_tarvo.")
         safe_decisions[source_id] = {"proposal": record["proposal"], "context": fresh}
-    return materialize(dataset, safe_decisions, rows)[0]
+    return materialize(dataset, safe_decisions, rows, inbox=inbox)[0]

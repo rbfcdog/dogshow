@@ -13,6 +13,7 @@ from check_remittance_reconciliation import check as check_remittance_reconcilia
 from check_normalization import check as check_normalization
 from check_flow_log import check as check_flow_log
 from check_banking_reference import check as check_banking_reference
+from check_slack_inbox import check as check_slack_inbox
 
 from src.application.closing import TECHNICAL_ASSUMPTIONS, close_month
 from src.application.diagnostics import diagnose
@@ -250,3 +251,4 @@ if __name__ == "__main__":
     check_normalization()
     check_flow_log()
     check_banking_reference()
+    check_slack_inbox()

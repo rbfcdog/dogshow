@@ -28,6 +28,8 @@ def main() -> None:
         help="Chama a LLM antes de fechar para gerar a referência contratual (exige OPENAI_API_KEY e OPENAI_MODEL no .env).")
     parser.add_argument("--env-file", type=Path, default=Path(".env"))
     parser.add_argument("--docs", type=Path, default=Path("docs"))
+    parser.add_argument("--caixa-de-entrada", type=Path,
+        help="Arquivo da caixa de entrada do Slack (JSON, CSV ou texto).")
     arguments = parser.parse_args()
     if not re.fullmatch(r"[0-9]{4}-(0[1-9]|1[0-2])", arguments.competencia):
         parser.error("Competência inválida: use AAAA-MM.")
@@ -45,6 +47,11 @@ def main() -> None:
         parser.error("--regerar grava referencias.json; use --referencias apontando para um arquivo com esse nome.")
     try:
         dataset = load_dataset(arguments.entrada)
+        from src.infrastructure.slack_inbox import find_inbox_file, parse_inbox
+        inbox_file = find_inbox_file(arguments.entrada, arguments.caixa_de_entrada)
+        inbox = parse_inbox(inbox_file) if inbox_file else None
+        if inbox:
+            applied.append(f"caixa de entrada do Slack ({inbox.source_file}): {len(inbox.bindings)} vínculos, {len(inbox.exemptions)} isenções")
         if arguments.regerar:
             from src.application.normalization import normalize_reference
             from src.infrastructure.flow_log import FlowLog
@@ -52,7 +59,7 @@ def main() -> None:
 
             with FlowLog(contract_file.parent) as log:
                 interpreter = OpenAIInterpreter(arguments.env_file, contract_file.parent / "cache_llm", log=log)
-                normalize_reference(dataset, arguments.entrada, contract_file.parent, interpreter, log=log)
+                normalize_reference(dataset, arguments.entrada, contract_file.parent, interpreter, log=log, inbox=inbox)
         bank_decisions = None
         if not arguments.sem_referencias:
             if bank_file.is_file():
@@ -74,7 +81,7 @@ def main() -> None:
                 from src.application.normalization import load_reference
 
                 try:
-                    dataset = load_reference(dataset, arguments.entrada, contract_file)
+                    dataset = load_reference(dataset, arguments.entrada, contract_file, inbox=inbox)
                     applied.append(f"contratual: {contract_file}")
                 except ValueError as error:
                     if arguments.referencias:
