@@ -45,6 +45,9 @@ class Contract:
     remittance_rate: Decimal | None
     validity: str | None
     note: str | None
+    validity_start: date | None = None
+    validity_end: date | None = None
+    structured_validity: bool = False
 
 
 @dataclass(frozen=True, slots=True)

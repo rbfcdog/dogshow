@@ -36,6 +36,12 @@ def output_id(kind: str, period: date, *parts: str) -> str:
 def active_on(contract: Contract, on_date: date) -> bool:
     if "INATIVO" in (contract.note or "").upper():
         return False
+    if contract.structured_validity:
+        return (
+            (contract.validity_start is not None or contract.validity_end is not None)
+            and (contract.validity_start is None or on_date >= contract.validity_start)
+            and (contract.validity_end is None or on_date <= contract.validity_end)
+        )
     validity = contract.validity
     if not validity:
         return False

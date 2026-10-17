@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from check_banking import check as check_banking
 from check_checkout import check as check_checkout
 from check_remittances import check as check_remittances
+from check_normalization import check as check_normalization
 
 from src.application.diagnostics import diagnose
 from src.domain.models import (
@@ -145,3 +146,4 @@ if __name__ == "__main__":
     check_checkout()
     check_remittances()
     check_banking()
+    check_normalization()
